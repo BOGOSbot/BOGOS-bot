@@ -193,6 +193,12 @@ class ProcessConfig:
     transcribe_workers: int = field(
         default_factory=lambda: _env_int("STT_WORKERS", 4)
     )
+    # Exit once nothing has happened for this long, so a woken box can fall
+    # back asleep instead of billing active CPU hours overnight. 0 disables it.
+    # On a host that should stay up (a PC, a VPS) this must be set to 0.
+    idle_exit_minutes: int = field(
+        default_factory=lambda: _env_int("IDLE_EXIT_MINUTES", 15)
+    )
     stt_health_check_interval: float = field(
         default_factory=lambda: _env_float("STT_HEALTH_CHECK_INTERVAL", 2.0)
     )

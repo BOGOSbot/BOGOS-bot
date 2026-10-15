@@ -58,6 +58,8 @@ class STTBot:
         self._speaker_names: dict[int, str] = {}
         # Set when the STT process reports its transcription backlog is empty.
         self._drained = asyncio.Event()
+        # Feeds the idle-exit watchdog: a woken box should fall back asleep.
+        self._last_activity = time.monotonic()
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -88,6 +90,7 @@ class STTBot:
             logger.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
             if self._result_task is None or self._result_task.done():
                 self._result_task = bot.loop.create_task(self._poll_results())
+            bot.loop.create_task(self._idle_exit_watchdog())
 
         @bot.event
         async def on_voice_state_update(
@@ -109,6 +112,39 @@ class STTBot:
             # Notify STT process when a user leaves or switches channels.
             if before.channel:
                 self._send_command("LEAVE", member.id)
+
+    # -- lifecycle ---------------------------------
+
+    def _note_activity(self) -> None:
+        """Reset the idle countdown."""
+        self._last_activity = time.monotonic()
+
+    async def _idle_exit_watchdog(self) -> None:
+        """Exit once idle, so the host can sleep and stop billing.
+
+        On an auto-pausing Upstash Box this is what returns the box to a paused
+        state: the process must end for the container to go idle. A live
+        session is never interrupted, however long it runs.
+        """
+        minutes = process_cfg.idle_exit_minutes
+        if minutes <= 0:
+            return
+        limit = minutes * 60.0
+        logger.info("Idle exit armed: %d minute(s) after the last activity.", minutes)
+
+        while True:
+            await asyncio.sleep(30)
+            if self._transcript_channel is not None:
+                continue  # someone is mid-session; never exit under them
+            idle_for = time.monotonic() - self._last_activity
+            if idle_for < limit:
+                continue
+            logger.info(
+                "Idle for %.0f minute(s); exiting so the host can sleep.",
+                idle_for / 60.0,
+            )
+            await self._bot.close()
+            return
 
     # -- commands ----------------------------------
 
@@ -206,6 +242,7 @@ class STTBot:
             self._session_started_at = datetime.now(timezone.utc)
             self._speaker_names = {}
             self._drained.clear()
+            self._note_activity()
 
             await target.send(
                 f"Listening in **{voice_channel}**. "
@@ -229,6 +266,7 @@ class STTBot:
             await self._post_corrections()
             await self._close_session()
             await ctx.send("Left the voice channel.")
+            self._note_activity()
 
     def _send_command(self, command: str, payload: object) -> None:
         try:
