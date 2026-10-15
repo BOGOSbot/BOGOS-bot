@@ -1,0 +1,8 @@
+name = "discord-transcriber-wake"
+main = "worker.js"
+compatibility_date = "2026-10-15"
+
+# Secrets are not kept here. Set them once with:
+#   npx wrangler secret put DISCORD_PUBLIC_KEY
+#   npx wrangler secret put UPSTASH_BOX_API_KEY
+#   npx wrangler secret put BOX_ID
