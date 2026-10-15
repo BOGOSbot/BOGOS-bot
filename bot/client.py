@@ -143,10 +143,62 @@ class STTBot:
                 await ctx.send(f"Already listening in **{voice_channel}**.")
                 return
 
+            # Check permissions BEFORE dialling. Without Connect, Discord never
+            # completes the voice handshake and discord.py raises a bare
+            # TimeoutError 30 seconds later, which explains nothing.
+            me = getattr(ctx.guild, "me", None)
+            if me is not None:
+                perms = voice_channel.permissions_for(me)
+                missing = [
+                    label
+                    for label, allowed in (
+                        ("View Channel", perms.view_channel),
+                        ("Connect", perms.connect),
+                    )
+                    if not allowed
+                ]
+                if missing:
+                    await ctx.send(
+                        f"I cannot join **{voice_channel}** — I am missing "
+                        f"**{' and '.join(missing)}** on that voice channel. "
+                        "A private channel needs an explicit allow for me: it "
+                        "is a per-channel permission, not the server role."
+                    )
+                    return
+
             # Close out a running session before opening a new one.
             if self._transcript_channel is not None:
                 await self._close_session()
 
+            try:
+                if ctx.voice_client is not None:
+                    await ctx.voice_client.move_to(voice_channel)
+                else:
+                    vc = await voice_channel.connect(
+                        cls=discord.ext.voice_recv.VoiceRecvClient,
+                        timeout=60.0,
+                    )
+                    vc.listen(STTAudioSink(self._audio_q))
+            except asyncio.TimeoutError:
+                logger.error("Voice connect to %s timed out.", voice_channel)
+                await ctx.send(
+                    f"Timed out joining **{voice_channel}**. Usual causes: no "
+                    "Connect permission there, the channel is full, or a stale "
+                    "voice session (restart me)."
+                )
+                return
+            except discord.Forbidden:
+                logger.error("Discord refused voice connect to %s.", voice_channel)
+                await ctx.send(
+                    f"Discord refused the connection to **{voice_channel}**."
+                )
+                return
+            except Exception as exc:
+                logger.error("Voice connect to %s failed: %s", voice_channel, exc)
+                await ctx.send(f"Could not join **{voice_channel}**: {exc}")
+                return
+
+            # Only open the session once the bot is actually in the channel.
             self._transcript_channel = target
             self._session_lines = []
             self._session_raw = []
@@ -154,14 +206,6 @@ class STTBot:
             self._session_started_at = datetime.now(timezone.utc)
             self._speaker_names = {}
             self._drained.clear()
-
-            if ctx.voice_client is not None:
-                await ctx.voice_client.move_to(voice_channel)
-            else:
-                vc = await voice_channel.connect(
-                    cls=discord.ext.voice_recv.VoiceRecvClient,
-                )
-                vc.listen(STTAudioSink(self._audio_q))
 
             await target.send(
                 f"Listening in **{voice_channel}**. "
