@@ -22,7 +22,8 @@ import discord.ext.voice_recv
 from discord.ext import commands
 
 from bot.audio_sink import STTAudioSink
-from config import discord_cfg, process_cfg, transcript_cfg
+from bot.cleanup import clean_lines, render_diff
+from config import cleanup_cfg, discord_cfg, process_cfg, transcript_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -48,6 +49,9 @@ class STTBot:
         # -- transcript session state --
         self._transcript_channel: discord.abc.Messageable | None = None
         self._session_lines: list[str] = []
+        # (speaker, verbatim text) for the cleanup pass, which needs the raw
+        # words rather than the already-markdown-formatted lines.
+        self._session_raw: list[tuple[str, str]] = []
         self._session_started_at: datetime | None = None
         self._pending: list[str] = []
         self._last_flush: float = 0.0
@@ -145,6 +149,7 @@ class STTBot:
 
             self._transcript_channel = target
             self._session_lines = []
+            self._session_raw = []
             self._pending = []
             self._session_started_at = datetime.now(timezone.utc)
             self._speaker_names = {}
@@ -177,6 +182,7 @@ class STTBot:
             await ctx.send("Stopped listening. Finishing the queued speech.")
             await self._await_drain()
             await ctx.voice_client.disconnect()
+            await self._post_corrections()
             await self._close_session()
             await ctx.send("Left the voice channel.")
 
@@ -239,6 +245,7 @@ class STTBot:
 
         line = f"**{name}** : {text}"
         self._session_lines.append(line)
+        self._session_raw.append((name, text))
         self._pending.append(line)
 
     def _speaker_name(self, user_id: object) -> str:
@@ -328,7 +335,52 @@ class STTBot:
 
     async def _finalize_after_disconnect(self) -> None:
         await self._await_drain()
+        await self._post_corrections()
         await self._close_session()
+
+    async def _post_corrections(self) -> None:
+        """One LLM pass over the session, shown as a diff, never applied silently.
+
+        The verbatim transcript is already in the channel; only the lines that
+        actually changed are posted, so nothing is repeated.
+        """
+        channel = self._transcript_channel
+        pairs = list(self._session_raw)
+        if not cleanup_cfg.enabled or channel is None or not pairs:
+            return
+
+        raw_lines = [text for _name, text in pairs]
+        try:
+            corrected = await asyncio.get_running_loop().run_in_executor(
+                None, clean_lines, raw_lines
+            )
+        except Exception as exc:
+            logger.error("Correction pass error: %s", exc)
+            return
+        if corrected is None:
+            return
+
+        changed = [
+            f"**{name}**: {render_diff(text, fixed.strip())}"
+            for (name, text), fixed in zip(pairs, corrected)
+            if fixed.strip() and fixed.strip() != text
+        ]
+        if not changed:
+            return
+
+        header = f"✎ {len(changed)} correction(s) — ~~removed~~, *added*:"
+        batch: list[str] = [header]
+        size = len(header)
+        for line in changed:
+            if size + len(line) + 1 > SAFE_MESSAGE_BUDGET and len(batch) > 1:
+                await channel.send("\n".join(batch))
+                batch, size = [], 0
+            batch.append(line)
+            size += len(line) + 1
+        try:
+            await channel.send("\n".join(batch))
+        except discord.HTTPException as exc:
+            logger.error("Could not post corrections: %s", exc)
 
     async def _close_session(self) -> None:
         """Flush what is buffered, keep a local copy, and reset.
@@ -345,6 +397,7 @@ class STTBot:
 
         self._transcript_channel = None
         self._session_lines = []
+        self._session_raw = []
         self._pending = []
         self._session_started_at = None
 

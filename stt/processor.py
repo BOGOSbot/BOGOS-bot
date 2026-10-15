@@ -6,11 +6,11 @@ loop never blocks on inference.
 
 Pipeline per frame (32 ms):
     IPC Queue -> UserStateManager -> Silero VAD -> Utterance Queue
-              -> Faster-Whisper (worker thread) -> Result Queue
+              -> transcriber worker pool -> ordered emitter -> Result Queue
 
-Transcription runs on its own thread and drains an utterance queue, so a slow
-model never stalls audio intake. Utterances wait in line and are transcribed at
-whatever pace the CPU manages; speech is delayed, never dropped.
+A pool of worker threads drains the utterance queue in parallel. Because
+they finish out of order, results are re-sequenced before they are emitted:
+a fast sentence must not appear before the slower one that preceded it.
 """
 
 from __future__ import annotations
@@ -18,20 +18,20 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import time
 import wave
 from multiprocessing import Queue as MPQueue
 from pathlib import Path
 from typing import Optional, Tuple
 
-from config import api_cfg, audio_cfg, vad_cfg
+from config import api_cfg, audio_cfg, process_cfg, vad_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Sentinel queued after a FLUSH_ALL so the client can tell when the backlog is
-# empty. It rides the same FIFO as the utterances, so ordering is guaranteed.
-DRAIN = "__DRAIN__"
 DRAINED_EVENT = "drained"
+# Give up waiting for the backlog rather than hanging !stop forever.
+_DRAIN_TIMEOUT = 300.0
 
 
 class STTProcessor:
@@ -67,18 +67,29 @@ class STTProcessor:
         self._dump_n = 0
         self._names: dict[int, str] = {}
 
-        # Utterances waiting for the model. Unbounded on purpose: when the CPU
-        # cannot keep up the transcript falls behind, but no speech is lost.
-        self._utterances: "queue.Queue[Optional[Tuple[int, bytes]]]" = queue.Queue()
-        self._worker: Optional[threading.Thread] = None
+        # Utterances waiting for a worker: (seq, user_id, pcm). Unbounded on
+        # purpose: falling behind must delay the transcript, never lose speech.
+        self._utterances: "queue.Queue[Optional[Tuple[int, int, bytes]]]" = queue.Queue()
+        self._workers: list[threading.Thread] = []
         self._warned_at = 0
+
+        # Ordered emission.
+        self._seq = 0
+        self._seq_lock = threading.Lock()
+        self._order_lock = threading.Lock()
+        self._ordered: dict[int, Optional[dict]] = {}
+        self._emit_next = 1
 
     # -- lifecycle --------------------------------
 
     def run(self) -> None:
         """Block forever, processing audio from the IPC queue."""
-        self._start_worker()
-        logger.info("STT Processor ready (PID %d).", os.getpid())
+        self._start_workers()
+        logger.info(
+            "STT Processor ready (PID %d), %d transcription worker(s).",
+            os.getpid(),
+            len(self._workers),
+        )
 
         while True:
             self._handle_commands()
@@ -86,57 +97,74 @@ class STTProcessor:
             self._flush_stale_speech()
             self._cleanup_inactive_users()
 
-    def _start_worker(self) -> None:
-        self._worker = threading.Thread(
-            target=self._transcribe_loop,
-            name="STT-Transcriber",
-            daemon=True,
-        )
-        self._worker.start()
+    def _start_workers(self) -> None:
+        for i in range(max(1, process_cfg.transcribe_workers)):
+            thread = threading.Thread(
+                target=self._transcribe_loop, name=f"STT-Worker-{i}", daemon=True
+            )
+            thread.start()
+            self._workers.append(thread)
+
+    # -- ordering ---------------------------------
+
+    def _reserve_seq(self) -> int:
+        with self._seq_lock:
+            self._seq += 1
+            return self._seq
+
+    def _deliver(self, seq: int, result: Optional[dict]) -> None:
+        """Hand results to the client in sequence order, not completion order."""
+        with self._order_lock:
+            self._ordered[seq] = result
+            while self._emit_next in self._ordered:
+                item = self._ordered.pop(self._emit_next)
+                self._emit_next += 1
+                if item is not None:
+                    self._put_result(item)
 
     def _transcribe_loop(self) -> None:
-        """Drain the utterance queue; the only thread that touches the model."""
+        """One worker: pull an utterance, transcribe it, deliver it in order."""
         while True:
             item = self._utterances.get()
             if item is None:
                 self._utterances.task_done()
                 return
 
-            user_id, audio = item
+            seq, user_id, audio = item
             try:
-                if user_id == DRAIN:
-                    self._put_result({"event": DRAINED_EVENT})
-                    continue
                 result = self._transcriber.transcribe(user_id, audio)
                 if result:
-                    # Travel with the audio so the bot never has to look the
-                    # name up in a cache that may not hold it.
+                    result["seq"] = seq
                     result.setdefault("name", self._names.get(user_id, ""))
-                    self._put_result(result)
+                self._deliver(seq, result)
             except Exception as exc:
                 logger.error("Transcription failed for user %s: %s", user_id, exc)
+                self._deliver(seq, None)
             finally:
                 self._utterances.task_done()
 
-    def _dump(self, user_id: int, audio: bytes) -> None:
-        """Persist one utterance as WAV -- byte-for-byte what the model hears.
+    # -- drain signalling -------------------------
 
-        This is the only way to tell a model problem from a broken audio path.
-        """
-        if not api_cfg.dump_dir:
-            return
-        try:
-            out = Path(api_cfg.dump_dir)
-            out.mkdir(parents=True, exist_ok=True)
-            self._dump_n += 1
-            path = out / f"{self._dump_n:04d}-u{user_id}.wav"
-            with wave.open(str(path), "wb") as w:
-                w.setnchannels(audio_cfg.output_channels)
-                w.setsampwidth(audio_cfg.sample_width)
-                w.setframerate(audio_cfg.output_sample_rate)
-                w.writeframes(audio)
-        except Exception as exc:
-            logger.error("Utterance dump failed: %s", exc)
+    def _request_drain(self) -> None:
+        """Reserve a sequence number past everything queued, then wait."""
+        seq = self._reserve_seq()
+        threading.Thread(
+            target=self._await_empty, args=(seq,), name="STT-Drain", daemon=True
+        ).start()
+
+    def _await_empty(self, seq: int) -> None:
+        deadline = time.monotonic() + _DRAIN_TIMEOUT
+        while self._utterances.unfinished_tasks > 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        pending = self._utterances.unfinished_tasks
+        if pending:
+            logger.warning("Drain timed out with %d utterance(s) still queued.", pending)
+        self._deliver(seq, {"event": DRAINED_EVENT})
+
+    def _await_backlog(self, timeout: float = 120.0) -> None:
+        deadline = time.monotonic() + timeout
+        while self._utterances.unfinished_tasks > 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
 
     def _enqueue(self, user_id: int, audio: bytes) -> None:
         self._dump(user_id, audio)
@@ -148,22 +176,7 @@ class STTProcessor:
                 "real time but nothing is being lost.",
                 depth,
             )
-        self._utterances.put((user_id, audio))
-
-    def _await_backlog(self) -> None:
-        """Wait for the worker to finish everything queued."""
-        pending = self._utterances.unfinished_tasks
-        if not pending:
-            return
-        logger.info("Waiting for %d queued utterance(s) to transcribe...", pending)
-        self._utterances.join()
-        logger.info("Transcription backlog drained.")
-
-    def _stop_worker(self) -> None:
-        if self._worker is None:
-            return
-        self._utterances.put(None)
-        self._worker.join(timeout=30)
+        self._utterances.put((self._reserve_seq(), user_id, audio))
 
     # -- internals --------------------------------
 
@@ -184,8 +197,7 @@ class STTProcessor:
                     self._flush_state(state, "leave")
             elif cmd == "FLUSH_ALL":
                 self._flush_all("flush-all")
-                # Signal completion after everything already queued.
-                self._utterances.put((DRAIN, b""))
+                self._request_drain()
             elif cmd == "SHUTDOWN":
                 logger.info("Received SHUTDOWN command.")
                 self._flush_all("shutdown")
@@ -222,35 +234,28 @@ class STTProcessor:
         )
 
         while len(state.raw_buffer) >= frame_bytes:
-            # Slice one frame
             frame = bytes(state.raw_buffer[:frame_bytes])
             del state.raw_buffer[:frame_bytes]
 
-            # VAD inference
             tensor = self._vad.frame_to_tensor(frame)
             state.vad_iterator(tensor, return_seconds=True)
             is_speech = state.vad_iterator.triggered
 
             if is_speech:
-                # On speech onset, prepend the ring-buffer context
                 if not state.is_speaking:
                     for prev_frame in state.ring_buffer.drain():
                         state.speech_buffer.extend(prev_frame)
                 state.speech_buffer.extend(frame)
 
-                # Stream a long monologue out in bounded chunks instead of
-                # holding everything until the speaker finally pauses.
                 if len(state.speech_buffer) >= max_bytes:
                     self._enqueue(user_id, bytes(state.reset_speech()))
             else:
                 if state.is_speaking:
-                    # End-of-speech -> hand the utterance to the worker
                     self._enqueue(user_id, bytes(state.reset_speech()))
-                # Keep recent silence in ring buffer
                 state.ring_buffer.append(frame)
 
     def _flush_state(self, state, reason: str) -> None:
-        """Hand any buffered speech to the worker before dropping a state."""
+        """Hand any buffered speech to a worker before dropping a state."""
         if not state.is_speaking:
             return
         logger.info("Flushed user %s speech due to %s.", state.user_id, reason)
@@ -268,6 +273,23 @@ class STTProcessor:
         for state in self._users.cleanup_inactive():
             self._flush_state(state, "user timeout")
 
+    def _dump(self, user_id: int, audio: bytes) -> None:
+        """Persist one utterance as WAV -- byte-for-byte what the model hears."""
+        if not api_cfg.dump_dir:
+            return
+        try:
+            out = Path(api_cfg.dump_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            self._dump_n += 1
+            path = out / f"{self._dump_n:04d}-u{user_id}.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(audio_cfg.output_channels)
+                w.setsampwidth(audio_cfg.sample_width)
+                w.setframerate(audio_cfg.output_sample_rate)
+                w.writeframes(audio)
+        except Exception as exc:
+            logger.error("Utterance dump failed: %s", exc)
+
     def _put_result(self, result: dict) -> None:
         try:
             self._result_q.put_nowait(result)
@@ -281,6 +303,7 @@ class STTProcessor:
 
 
 # -- Process entry point -------------------------
+
 
 def run_stt_process(
     audio_queue: MPQueue,

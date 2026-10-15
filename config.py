@@ -27,6 +27,13 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {value!r}") from exc
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or value.strip() == "":
@@ -151,6 +158,11 @@ class ProcessConfig:
     command_queue_maxsize: int = field(
         default_factory=lambda: _env_int("COMMAND_QUEUE_MAXSIZE", 128)
     )
+    # Parallel transcription workers. Cloud STT is network-bound, so a handful
+    # of concurrent requests drains a backlog several times faster.
+    transcribe_workers: int = field(
+        default_factory=lambda: _env_int("STT_WORKERS", 4)
+    )
     stt_health_check_interval: float = field(
         default_factory=lambda: _env_float("STT_HEALTH_CHECK_INTERVAL", 2.0)
     )
@@ -199,6 +211,30 @@ class APIConfig:
 
 
 # ──────────────────────────────────────────────
+# Post-transcription cleanup (LLM)
+# ──────────────────────────────────────────────
+@dataclass(frozen=True)
+class CleanupConfig:
+    """One LLM pass over a finished transcript, to fix what context can fix.
+
+    Output is rendered as a diff rather than applied silently, so a wrong
+    correction is visible and rejectable rather than quietly rewriting speech.
+    """
+    enabled: bool = field(default_factory=lambda: _env_bool("CLEANUP_ENABLED", True))
+    openrouter_key: str = field(
+        default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
+    )
+    model: str = field(
+        default_factory=lambda: _env_str(
+            "CLEANUP_MODEL", "deepseek/deepseek-v4.1-flash"
+        )
+    )
+    timeout_seconds: float = field(
+        default_factory=lambda: _env_float("CLEANUP_TIMEOUT", 180.0)
+    )
+
+
+# ──────────────────────────────────────────────
 # Transcript output
 # ──────────────────────────────────────────────
 @dataclass(frozen=True)
@@ -229,6 +265,7 @@ audio_cfg = AudioConfig()
 vad_cfg = VADConfig()
 stt_cfg = STTConfig()
 api_cfg = APIConfig()
+cleanup_cfg = CleanupConfig()
 transcript_cfg = TranscriptConfig()
 process_cfg = ProcessConfig()
 log_cfg = LogConfig()

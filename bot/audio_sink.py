@@ -28,7 +28,10 @@ class STTAudioSink(AudioSink):
     def __init__(self, audio_queue: MPQueue) -> None:
         super().__init__()
         self._queue = audio_queue
-        self._resampler = AudioResampler()
+        # ONE RESAMPLER PER SPEAKER. The resampler carries filter state, and
+        # packets from different speakers arrive interleaved; sharing a single
+        # instance would splice unrelated audio together.
+        self._resamplers: dict[int, AudioResampler] = {}
         self._dropped_frames = 0
         self._last_drop_log = 0.0
         logger.info("STTAudioSink initialised.")
@@ -45,7 +48,14 @@ class STTAudioSink(AudioSink):
         if user is None:
             return
         try:
-            resampled = self._resampler.resample(data.pcm)
+            resampler = self._resamplers.get(user.id)
+            if resampler is None:
+                resampler = AudioResampler()
+                self._resamplers[user.id] = resampler
+                self._prune_resamplers()
+            resampled = resampler.resample(data.pcm)
+            if not resampled:
+                return  # still filling the filter; nothing to send yet
             # Carry the display name alongside the audio. Resolving it later
             # depends on discord.py's member cache, which stays empty without
             # the privileged members intent -- that is what produced "User <id>".
@@ -69,5 +79,14 @@ class STTAudioSink(AudioSink):
         except Exception as exc:
             logger.error("AudioSink write error: %s", exc)
 
+    def _prune_resamplers(self) -> None:
+        """Drop filter state for speakers long gone, keeping the map bounded."""
+        if len(self._resamplers) <= 32:
+            return
+        stale = [uid for uid, r in self._resamplers.items() if r.idle_for() > 120.0]
+        for uid in stale:
+            del self._resamplers[uid]
+
     def cleanup(self) -> None:
+        self._resamplers.clear()
         logger.info("STTAudioSink cleanup.")
