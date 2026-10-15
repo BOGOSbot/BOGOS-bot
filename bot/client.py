@@ -136,7 +136,7 @@ class STTBot:
                 and self._transcript_channel == target
             )
             if already:
-                await ctx.send(f"🎙️ Already listening in **{voice_channel}**.")
+                await ctx.send(f"Already listening in **{voice_channel}**.")
                 return
 
             # Close out a running session before opening a new one.
@@ -159,7 +159,7 @@ class STTBot:
                 vc.listen(STTAudioSink(self._audio_q))
 
             await target.send(
-                f"🎙️ Listening in **{voice_channel}** — transcript starts here. "
+                f"Listening in **{voice_channel}**. "
                 f"Use {discord_cfg.command_prefix}stop to finish."
             )
             logger.info("Transcribing %s into #%s", voice_channel, target)
@@ -174,11 +174,11 @@ class STTBot:
             # Clear before flushing so a fast drain signal cannot be missed.
             self._drained.clear()
             self._send_command("FLUSH_ALL", None)
-            await ctx.send("⏳ Finishing the queued speech...")
+            await ctx.send("Stopped listening. Finishing the queued speech.")
             await self._await_drain()
             await ctx.voice_client.disconnect()
             await self._close_session()
-            await ctx.send("👋 Left the voice channel.")
+            await ctx.send("Left the voice channel.")
 
     def _send_command(self, command: str, payload: object) -> None:
         try:

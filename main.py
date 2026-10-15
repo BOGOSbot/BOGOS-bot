@@ -16,11 +16,28 @@ import queue
 import signal
 import sys
 import threading
+from pathlib import Path
 
-from config import discord_cfg, process_cfg
+from config import api_cfg, discord_cfg, process_cfg, stt_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def build_id() -> str:
+    """Short git commit of the running checkout, read without a subprocess.
+
+    Logged at startup because code and config are both frozen when the process
+    starts: an edit made after the bot was launched is otherwise invisible.
+    """
+    try:
+        git = Path(__file__).resolve().parent / ".git"
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            head = (git / head.split(" ", 1)[1].strip()).read_text(encoding="utf-8").strip()
+        return head[:7]
+    except Exception:
+        return "unknown"
 
 
 def main() -> None:
@@ -29,6 +46,14 @@ def main() -> None:
     if not discord_cfg.token:
         logger.critical("DISCORD_TOKEN is not set. Aborting before STT startup.")
         sys.exit(1)
+
+    logger.info(
+        "Build %s | backend=%s | model=%s | language=%s",
+        build_id(),
+        api_cfg.backend,
+        api_cfg.model if api_cfg.backend == "openrouter" else stt_cfg.model_id,
+        stt_cfg.language,
+    )
 
     # ── IPC Queues ───────────────────────────────
     audio_queue = multiprocessing.Queue(maxsize=process_cfg.audio_queue_maxsize)

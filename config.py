@@ -187,7 +187,7 @@ class APIConfig:
     )
     model: str = field(
         default_factory=lambda: _env_str(
-            "STT_API_MODEL", "mistralai/voxtral-mini-3b-2507"
+            "STT_API_MODEL", "mistralai/voxtral-small-24b-2507-stt"
         )
     )
     timeout_seconds: float = field(
