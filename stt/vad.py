@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 import numpy as np
 
-from config import vad_cfg
+from config import audio_cfg, vad_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -34,7 +34,13 @@ class VADWrapper:
 
     def create_iterator(self):
         """Return a fresh VADIterator bound to the loaded model."""
-        return self._VADIterator(self._model)
+        return self._VADIterator(
+            self._model,
+            threshold=vad_cfg.threshold,
+            sampling_rate=audio_cfg.output_sample_rate,
+            min_silence_duration_ms=vad_cfg.min_silence_ms,
+            speech_pad_ms=vad_cfg.speech_pad_ms,
+        )
 
     @staticmethod
     def frame_to_tensor(frame_bytes: bytes) -> torch.Tensor:

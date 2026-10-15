@@ -51,8 +51,9 @@ class STTBot:
         self._session_started_at: datetime | None = None
         self._pending: list[str] = []
         self._last_flush: float = 0.0
-        self._last_result_at: float = 0.0
         self._speaker_names: dict[int, str] = {}
+        # Set when the STT process reports its transcription backlog is empty.
+        self._drained = asyncio.Event()
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -96,6 +97,7 @@ class STTBot:
             if bot.user and member.id == bot.user.id and before.channel:
                 # We were disconnected (or Discord dropped the session): flush
                 # whatever is buffered, then post the transcript we have.
+                self._drained.clear()
                 self._send_command("FLUSH_ALL", None)
                 bot.loop.create_task(self._finalize_after_disconnect())
                 return
@@ -146,7 +148,7 @@ class STTBot:
             self._pending = []
             self._session_started_at = datetime.now(timezone.utc)
             self._speaker_names = {}
-            self._last_result_at = time.monotonic()
+            self._drained.clear()
 
             if ctx.voice_client is not None:
                 await ctx.voice_client.move_to(voice_channel)
@@ -169,8 +171,14 @@ class STTBot:
                 await ctx.send("❌ I am not in a voice channel.")
                 return
 
+            # Clear before flushing so a fast drain signal cannot be missed.
+            self._drained.clear()
             self._send_command("FLUSH_ALL", None)
-            await self._await_results_quiet()
+            await ctx.send(
+                "⏳ Stopped listening. Finishing the queued speech — the "
+                "transcript follows once the backlog is transcribed."
+            )
+            await self._await_drain()
             await ctx.voice_client.disconnect()
             await self._finalize_session()
             await ctx.send("👋 Left the voice channel; transcript posted.")
@@ -197,7 +205,6 @@ class STTBot:
                     except queue.Empty:
                         break
                     drained = True
-                    self._last_result_at = time.monotonic()
                     self._handle_result(result)
 
                 await self._maybe_flush()
@@ -212,6 +219,10 @@ class STTBot:
 
     def _handle_result(self, result: dict) -> None:
         """Format one utterance and queue it for posting."""
+        if result.get("event") == "drained":
+            self._drained.set()
+            return
+
         text = (result.get("text") or "").strip()
         if not text:
             return
@@ -301,20 +312,23 @@ class STTBot:
             size += len(nxt) + 1
         return chunk
 
-    async def _await_results_quiet(
-        self,
-        quiet_seconds: float = 0.8,
-        timeout: float = 6.0,
-    ) -> None:
-        """Wait until the STT process stops producing results (bounded)."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if time.monotonic() - self._last_result_at >= quiet_seconds:
-                return
-            await asyncio.sleep(0.1)
+    async def _await_drain(self, timeout: float = 7200.0) -> None:
+        """Wait until the STT worker has transcribed everything queued.
+
+        There is deliberately no short timeout: the whole point of the worker
+        is that a slow model may take minutes, and dropping the tail of a
+        conversation to save time would be the wrong trade.
+        """
+        try:
+            await asyncio.wait_for(self._drained.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Gave up after %.0fs waiting for the transcription backlog.",
+                timeout,
+            )
 
     async def _finalize_after_disconnect(self) -> None:
-        await self._await_results_quiet()
+        await self._await_drain()
         await self._finalize_session()
 
     async def _finalize_session(self) -> None:

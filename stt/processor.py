@@ -1,23 +1,35 @@
 """
-STT Process — the isolated heavy-compute worker.
+STT Process -- the isolated heavy-compute worker.
 
-Runs in its own OS process (via multiprocessing) so the
-Discord bot's event loop never blocks on inference.
+Runs in its own OS process (via multiprocessing) so the Discord bot's event
+loop never blocks on inference.
 
 Pipeline per frame (32 ms):
-    IPC Queue → UserStateManager → Silero VAD → Accumulator → Faster-Whisper → Result Queue
+    IPC Queue -> UserStateManager -> Silero VAD -> Utterance Queue
+              -> Faster-Whisper (worker thread) -> Result Queue
+
+Transcription runs on its own thread and drains an utterance queue, so a slow
+model never stalls audio intake. Utterances wait in line and are transcribed at
+whatever pace the CPU manages; speech is delayed, never dropped.
 """
 
 from __future__ import annotations
 
 import os
 import queue
+import threading
 from multiprocessing import Queue as MPQueue
+from typing import Optional, Tuple
 
-from config import vad_cfg
+from config import audio_cfg, vad_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Sentinel queued after a FLUSH_ALL so the client can tell when the backlog is
+# empty. It rides the same FIFO as the utterances, so ordering is guaranteed.
+DRAIN = "__DRAIN__"
+DRAINED_EVENT = "drained"
 
 
 class STTProcessor:
@@ -42,10 +54,17 @@ class STTProcessor:
         self._transcriber = Transcriber()
         self._users = UserStateManager(vad_iterator_factory=self._vad.create_iterator)
 
-    # ── main loop ─────────────────────────────────
+        # Utterances waiting for the model. Unbounded on purpose: when the CPU
+        # cannot keep up the transcript falls behind, but no speech is lost.
+        self._utterances: "queue.Queue[Optional[Tuple[int, bytes]]]" = queue.Queue()
+        self._worker: Optional[threading.Thread] = None
+        self._warned_at = 0
+
+    # -- lifecycle --------------------------------
 
     def run(self) -> None:
         """Block forever, processing audio from the IPC queue."""
+        self._start_worker()
         logger.info("STT Processor ready (PID %d).", os.getpid())
 
         while True:
@@ -54,7 +73,62 @@ class STTProcessor:
             self._flush_stale_speech()
             self._cleanup_inactive_users()
 
-    # ── internals ─────────────────────────────────
+    def _start_worker(self) -> None:
+        self._worker = threading.Thread(
+            target=self._transcribe_loop,
+            name="STT-Transcriber",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def _transcribe_loop(self) -> None:
+        """Drain the utterance queue; the only thread that touches the model."""
+        while True:
+            item = self._utterances.get()
+            if item is None:
+                self._utterances.task_done()
+                return
+
+            user_id, audio = item
+            try:
+                if user_id == DRAIN:
+                    self._put_result({"event": DRAINED_EVENT})
+                    continue
+                result = self._transcriber.transcribe(user_id, audio)
+                if result:
+                    self._put_result(result)
+            except Exception as exc:
+                logger.error("Transcription failed for user %s: %s", user_id, exc)
+            finally:
+                self._utterances.task_done()
+
+    def _enqueue(self, user_id: int, audio: bytes) -> None:
+        depth = self._utterances.qsize()
+        if depth >= 25 and depth - self._warned_at >= 25:
+            self._warned_at = depth
+            logger.warning(
+                "%d utterances queued; the transcript is falling behind "
+                "real time but nothing is being lost.",
+                depth,
+            )
+        self._utterances.put((user_id, audio))
+
+    def _await_backlog(self) -> None:
+        """Wait for the worker to finish everything queued."""
+        pending = self._utterances.unfinished_tasks
+        if not pending:
+            return
+        logger.info("Waiting for %d queued utterance(s) to transcribe...", pending)
+        self._utterances.join()
+        logger.info("Transcription backlog drained.")
+
+    def _stop_worker(self) -> None:
+        if self._worker is None:
+            return
+        self._utterances.put(None)
+        self._worker.join(timeout=30)
+
+    # -- internals --------------------------------
 
     def _handle_commands(self) -> None:
         """Drain the command queue (non-blocking)."""
@@ -73,9 +147,12 @@ class STTProcessor:
                     self._flush_state(state, "leave")
             elif cmd == "FLUSH_ALL":
                 self._flush_all("flush-all")
+                # Signal completion after everything already queued.
+                self._utterances.put((DRAIN, b""))
             elif cmd == "SHUTDOWN":
                 logger.info("Received SHUTDOWN command.")
                 self._flush_all("shutdown")
+                self._await_backlog()
                 raise SystemExit(0)
 
     def _process_audio(self) -> None:
@@ -92,6 +169,11 @@ class STTProcessor:
         state.raw_buffer.extend(pcm_data)
 
         frame_bytes = vad_cfg.frame_bytes
+        max_bytes = int(
+            vad_cfg.max_utterance_seconds
+            * audio_cfg.output_sample_rate
+            * audio_cfg.sample_width
+        )
 
         while len(state.raw_buffer) >= frame_bytes:
             # Slice one frame
@@ -109,26 +191,24 @@ class STTProcessor:
                     for prev_frame in state.ring_buffer.drain():
                         state.speech_buffer.extend(prev_frame)
                 state.speech_buffer.extend(frame)
+
+                # Stream a long monologue out in bounded chunks instead of
+                # holding everything until the speaker finally pauses.
+                if len(state.speech_buffer) >= max_bytes:
+                    self._enqueue(user_id, bytes(state.reset_speech()))
             else:
                 if state.is_speaking:
-                    # End-of-speech → transcribe
-                    audio_data = state.reset_speech()
-                    result = self._transcriber.transcribe(user_id, bytes(audio_data))
-                    if result:
-                        self._put_result(result)
+                    # End-of-speech -> hand the utterance to the worker
+                    self._enqueue(user_id, bytes(state.reset_speech()))
                 # Keep recent silence in ring buffer
                 state.ring_buffer.append(frame)
 
     def _flush_state(self, state, reason: str) -> None:
-        """Transcribe any buffered speech before discarding a user state."""
+        """Hand any buffered speech to the worker before dropping a state."""
         if not state.is_speaking:
             return
-
-        audio_data = state.reset_speech()
-        result = self._transcriber.transcribe(state.user_id, bytes(audio_data))
-        if result:
-            logger.info("Flushed user %s speech due to %s.", state.user_id, reason)
-            self._put_result(result)
+        logger.info("Flushed user %s speech due to %s.", state.user_id, reason)
+        self._enqueue(state.user_id, bytes(state.reset_speech()))
 
     def _flush_all(self, reason: str) -> None:
         for state in self._users.remove_all():
@@ -154,7 +234,7 @@ class STTProcessor:
             logger.error("Result queue error: %s", exc)
 
 
-# ── Process entry point ─────────────────────────
+# -- Process entry point -------------------------
 
 def run_stt_process(
     audio_queue: MPQueue,

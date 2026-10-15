@@ -71,6 +71,23 @@ class VADConfig:
     frame_duration_ms: int = 32
     ring_buffer_frames: int = 10  # ~320 ms pre-speech context
 
+    # End-of-speech tuning. Silero's default min_silence (100 ms) ends an
+    # utterance at the first natural inter-word pause: the transcript gets
+    # shredded into half-second fragments that Whisper mostly hallucinates on,
+    # and every fragment costs a full encoder pass. 600 ms is a sentence pause.
+    threshold: float = field(default_factory=lambda: _env_float("VAD_THRESHOLD", 0.5))
+    min_silence_ms: int = field(
+        default_factory=lambda: _env_int("VAD_MIN_SILENCE_MS", 600)
+    )
+    speech_pad_ms: int = field(
+        default_factory=lambda: _env_int("VAD_SPEECH_PAD_MS", 200)
+    )
+    # Emit mid-speech past this length so a monologue streams out in chunks
+    # instead of arriving as one huge blob after the speaker finally stops.
+    max_utterance_seconds: float = field(
+        default_factory=lambda: _env_float("VAD_MAX_UTTERANCE_SECONDS", 25.0)
+    )
+
     @property
     def frame_bytes(self) -> int:
         """Bytes per VAD frame (512 samples × 2 bytes/sample)."""
@@ -95,8 +112,8 @@ class STTConfig:
     language: str = field(default_factory=lambda: _env_str("STT_LANGUAGE", "fr"))
     beam_size: int = field(default_factory=lambda: _env_int("STT_BEAM_SIZE", 1))
     min_audio_bytes: int = field(
-        default_factory=lambda: _env_int("STT_MIN_AUDIO_BYTES", 3200)
-    )  # Ignore audio < 0.1 s (1600 samples × 2 bytes)
+        default_factory=lambda: _env_int("STT_MIN_AUDIO_BYTES", 8000)
+    )  # Ignore audio < 0.25 s (4000 samples × 2 bytes): clicks, not speech
     fallback_model_id: str = field(
         default_factory=lambda: _env_str("STT_FALLBACK_MODEL_ID", "base")
     )
