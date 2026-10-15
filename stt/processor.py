@@ -15,6 +15,7 @@ a fast sentence must not appear before the slower one that preceded it.
 
 from __future__ import annotations
 
+import math
 import os
 import queue
 import threading
@@ -24,12 +25,40 @@ from multiprocessing import Queue as MPQueue
 from pathlib import Path
 from typing import Optional, Tuple
 
-from config import api_cfg, audio_cfg, process_cfg, vad_cfg
+import numpy as np
+
+from config import api_cfg, audio_cfg, process_cfg, stt_cfg, vad_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 DRAINED_EVENT = "drained"
+
+
+def _dbfs(samples: np.ndarray) -> float:
+    """Level of an int16 signal in dBFS (-99 when silent)."""
+    if samples.size == 0:
+        return -99.0
+    rms = float(np.sqrt((samples.astype(np.float64) ** 2).mean()))
+    if rms <= 0.0:
+        return -99.0
+    return 20.0 * math.log10(rms / 32768.0)
+
+
+def _normalise(samples: np.ndarray, target_dbfs: float, max_gain_db: float) -> bytes:
+    """Lift an utterance toward a consistent level so quiet speakers are not penalised.
+
+    Speech in the captured dumps ranged from -52 to -15 dBFS; the quiet end is
+    a lot of lost signal for the model to work with.
+    """
+    if samples.size == 0 or target_dbfs >= 0.0:
+        return samples.tobytes()
+    gain_db = min(target_dbfs - _dbfs(samples), max_gain_db)
+    if abs(gain_db) < 1.0:
+        return samples.tobytes()
+    gain = 10.0 ** (gain_db / 20.0)
+    scaled = np.clip(np.rint(samples.astype(np.float64) * gain), -32768, 32767)
+    return scaled.astype(np.int16).tobytes()
 # Give up waiting for the backlog rather than hanging !stop forever.
 _DRAIN_TIMEOUT = 300.0
 
@@ -66,6 +95,7 @@ class STTProcessor:
         self._users = UserStateManager(vad_iterator_factory=self._vad.create_iterator)
         self._dump_n = 0
         self._names: dict[int, str] = {}
+        self._dropped_quiet = 0
 
         # Utterances waiting for a worker: (seq, user_id, pcm). Unbounded on
         # purpose: falling behind must delay the transcript, never lose speech.
@@ -133,6 +163,8 @@ class STTProcessor:
             seq, user_id, audio = item
             try:
                 result = self._transcriber.transcribe(user_id, audio)
+                if result and not self._plausible(result, audio):
+                    result = None  # Guard 3: invented, whatever its level.
                 if result:
                     result["seq"] = seq
                     result.setdefault("name", self._names.get(user_id, ""))
@@ -142,6 +174,31 @@ class STTProcessor:
                 self._deliver(seq, None)
             finally:
                 self._utterances.task_done()
+
+    def _plausible(self, result: dict, audio: bytes) -> bool:
+        """Reject a transcript nobody could have spoken in that much time.
+
+        Measured hallucinations recite training data at absurd rates: a 0.6 s
+        clip came back as a sixteen-word sentence. Real speech is a few words
+        per second, and energy does not separate the two.
+        """
+        seconds = max(
+            len(audio) / (audio_cfg.output_sample_rate * audio_cfg.sample_width),
+            0.1,
+        )
+        words = len((result.get("text") or "").split())
+        limit = max(
+            stt_cfg.min_words_grace, stt_cfg.max_words_per_second * seconds
+        )
+        if words > limit:
+            logger.warning(
+                "Discarded likely hallucination: %d words from %.2fs of audio: %s",
+                words,
+                seconds,
+                (result.get("text") or "")[:70],
+            )
+            return False
+        return True
 
     # -- drain signalling -------------------------
 
@@ -168,6 +225,24 @@ class STTProcessor:
 
     def _enqueue(self, user_id: int, audio: bytes) -> None:
         self._dump(user_id, audio)
+
+        # Guard 1: silence is not speech. ASR models answer silence with
+        # invented fluent text rather than an empty string.
+        samples = np.frombuffer(audio, dtype=np.int16)
+        level = _dbfs(samples)
+        if level < stt_cfg.min_speech_dbfs:
+            self._dropped_quiet += 1
+            if self._dropped_quiet % 10 == 1:
+                logger.info(
+                    "Dropped %d near-silent utterance(s); last was %.1f dBFS.",
+                    self._dropped_quiet,
+                    level,
+                )
+            return
+
+        # Guard 2: level the utterance before it is sent.
+        audio = _normalise(samples, stt_cfg.normalize_dbfs, stt_cfg.max_gain_db)
+
         depth = self._utterances.qsize()
         if depth >= 25 and depth - self._warned_at >= 25:
             self._warned_at = depth

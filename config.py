@@ -124,6 +124,36 @@ class STTConfig:
     min_audio_bytes: int = field(
         default_factory=lambda: _env_int("STT_MIN_AUDIO_BYTES", 8000)
     )  # Ignore audio < 0.25 s (4000 samples × 2 bytes): clicks, not speech
+
+    # --- anti-hallucination guards -------------------------------------
+    # ASR models do not return an empty string for silence, they invent
+    # fluent text. Measured on real dumps: a -77 dBFS clip produced a full
+    # fabricated sentence. These three guards are layered because no single
+    # one is sufficient.
+    #
+    # 1. Floor: drop utterances this quiet before spending a request on them.
+    min_speech_dbfs: float = field(
+        default_factory=lambda: _env_float("STT_MIN_SPEECH_DBFS", -60.0)
+    )
+    # 2. Level: lift quiet speakers toward a consistent target. Real speech in
+    #    the dumps ranged from -52 to -15 dBFS, which is a lot of lost signal.
+    normalize_dbfs: float = field(
+        default_factory=lambda: _env_float("STT_NORMALIZE_DBFS", -20.0)
+    )
+    max_gain_db: float = field(
+        default_factory=lambda: _env_float("STT_MAX_GAIN_DB", 24.0)
+    )
+    # 3. Plausibility: nobody speaks this fast. A 0.6 s clip yielding a
+    #    sixteen-word sentence is invented, whatever its level.
+    # Tuned on real dumps: genuine fast technical French measured 5.9 words/s,
+    # while fabrications started at 8.6 and ran to 84. The grace keeps short
+    # but real replies ("Merci.", "Je ne sais pas") from being discarded.
+    max_words_per_second: float = field(
+        default_factory=lambda: _env_float("STT_MAX_WORDS_PER_SECOND", 7.0)
+    )
+    min_words_grace: int = field(
+        default_factory=lambda: _env_int("STT_MIN_WORDS_GRACE", 5)
+    )
     fallback_model_id: str = field(
         default_factory=lambda: _env_str("STT_FALLBACK_MODEL_ID", "base")
     )
@@ -220,7 +250,9 @@ class CleanupConfig:
     Output is rendered as a diff rather than applied silently, so a wrong
     correction is visible and rejectable rather than quietly rewriting speech.
     """
-    enabled: bool = field(default_factory=lambda: _env_bool("CLEANUP_ENABLED", True))
+    # Off by default: it runs after the ASR, so while a hallucination problem
+    # is being diagnosed it only adds a second suspect.
+    enabled: bool = field(default_factory=lambda: _env_bool("CLEANUP_ENABLED", False))
     openrouter_key: str = field(
         default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
     )
