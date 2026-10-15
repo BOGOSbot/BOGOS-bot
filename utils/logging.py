@@ -24,7 +24,17 @@ def _configure_root() -> None:
     root.setLevel(getattr(logging, log_cfg.level.upper(), logging.INFO))
 
     if not root.handlers:
-        handler = logging.StreamHandler(sys.stdout)
+        # Windows consoles default to a legacy code page (cp1252). The log
+        # format uses box-drawing characters and the client logs emoji, so
+        # without forcing UTF-8 every log line raises UnicodeEncodeError.
+        stream = sys.stdout
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        handler = logging.StreamHandler(stream)
         handler.setFormatter(
             logging.Formatter(fmt=log_cfg.format, datefmt=log_cfg.date_format)
         )

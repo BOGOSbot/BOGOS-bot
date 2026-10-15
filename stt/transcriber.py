@@ -79,11 +79,18 @@ class Transcriber:
         pcm_i16 = np.frombuffer(audio_bytes, dtype=np.int16)
         pcm_f32 = pcm_i16.astype(np.float32) / 32768.0
 
+        # "auto" (or empty) lets Whisper detect the language per utterance.
+        language = (
+            None
+            if stt_cfg.language.strip().lower() in ("", "auto")
+            else stt_cfg.language
+        )
+
         t0 = time.perf_counter()
         try:
             segments, _info = self._model.transcribe(
                 pcm_f32,
-                language=stt_cfg.language,
+                language=language,
                 beam_size=stt_cfg.beam_size,
             )
             text = "".join(seg.text for seg in segments).strip()

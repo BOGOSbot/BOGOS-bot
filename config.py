@@ -92,7 +92,7 @@ class STTConfig:
     compute_type: str = field(
         default_factory=lambda: _env_str("STT_COMPUTE_TYPE", "float16")
     )
-    language: str = field(default_factory=lambda: _env_str("STT_LANGUAGE", "ko"))
+    language: str = field(default_factory=lambda: _env_str("STT_LANGUAGE", "fr"))
     beam_size: int = field(default_factory=lambda: _env_int("STT_BEAM_SIZE", 1))
     min_audio_bytes: int = field(
         default_factory=lambda: _env_int("STT_MIN_AUDIO_BYTES", 3200)
@@ -150,11 +150,35 @@ class LogConfig:
 
 
 # ──────────────────────────────────────────────
+# Transcript output
+# ──────────────────────────────────────────────
+@dataclass(frozen=True)
+class TranscriptConfig:
+    """Where and how transcript lines are posted back into Discord."""
+    # 0 = post to the channel the command was used in
+    channel_id: int = field(
+        default_factory=lambda: _env_int("TRANSCRIPT_CHANNEL_ID", 0)
+    )
+    # Batch window: utterances arriving inside this window are grouped
+    flush_interval_seconds: float = field(
+        default_factory=lambda: _env_float("TRANSCRIPT_FLUSH_INTERVAL", 2.0)
+    )
+    max_lines_per_message: int = field(
+        default_factory=lambda: _env_int("TRANSCRIPT_MAX_LINES", 12)
+    )
+    # Local copy of each finished session transcript
+    save_dir: str = field(
+        default_factory=lambda: _env_str("TRANSCRIPT_SAVE_DIR", "transcripts")
+    )
+
+
+# ──────────────────────────────────────────────
 # Singleton instances (import these directly)
 # ──────────────────────────────────────────────
 discord_cfg = DiscordConfig()
 audio_cfg = AudioConfig()
 vad_cfg = VADConfig()
 stt_cfg = STTConfig()
+transcript_cfg = TranscriptConfig()
 process_cfg = ProcessConfig()
 log_cfg = LogConfig()

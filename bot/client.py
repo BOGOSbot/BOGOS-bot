@@ -1,23 +1,34 @@
 """
-Discord bot client setup, slash/prefix commands, and result handling.
+Discord bot client: prefix commands and transcript delivery.
+
+Deviations from upstream, both deliberate:
+  * !transcript joins the caller's voice channel and posts the live transcript
+    into a text channel (the channel the command was used in, by default).
+  * Utterances are batched, speaker display names are resolved, and the whole
+    session is posted as one consolidated transcript when the bot stops.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import queue
+import time
+from datetime import datetime, timezone
 from multiprocessing import Queue as MPQueue
+from pathlib import Path
 
 import discord
 import discord.ext.voice_recv
 from discord.ext import commands
 
 from bot.audio_sink import STTAudioSink
-from config import discord_cfg, process_cfg
+from config import discord_cfg, process_cfg, transcript_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Discord hard-caps messages at 2000 characters; stay under it.
+SAFE_MESSAGE_BUDGET = 1800
 
 
 class STTBot:
@@ -34,6 +45,15 @@ class STTBot:
         self._cmd_q = command_queue
         self._result_task: asyncio.Task | None = None
 
+        # -- transcript session state --
+        self._transcript_channel: discord.abc.Messageable | None = None
+        self._session_lines: list[str] = []
+        self._session_started_at: datetime | None = None
+        self._pending: list[str] = []
+        self._last_flush: float = 0.0
+        self._last_result_at: float = 0.0
+        self._speaker_names: dict[int, str] = {}
+
         intents = discord.Intents.default()
         intents.message_content = True
 
@@ -44,7 +64,7 @@ class STTBot:
         self._register_events()
         self._register_commands()
 
-    # ── public ────────────────────────────────────
+    # -- public ------------------------------------
 
     def run(self) -> None:
         """Start the bot (blocking)."""
@@ -53,7 +73,7 @@ class STTBot:
             return
         self._bot.run(discord_cfg.token, log_handler=None)
 
-    # ── events ────────────────────────────────────
+    # -- events ------------------------------------
 
     def _register_events(self) -> None:
         bot = self._bot
@@ -74,48 +94,86 @@ class STTBot:
                 return
 
             if bot.user and member.id == bot.user.id and before.channel:
+                # We were disconnected (or Discord dropped the session): flush
+                # whatever is buffered, then post the transcript we have.
                 self._send_command("FLUSH_ALL", None)
+                bot.loop.create_task(self._finalize_after_disconnect())
                 return
 
             # Notify STT process when a user leaves or switches channels.
             if before.channel:
                 self._send_command("LEAVE", member.id)
 
-    # ── commands ──────────────────────────────────
+    # -- commands ----------------------------------
 
     def _register_commands(self) -> None:
         bot = self._bot
 
-        @bot.command(name="join")
-        async def cmd_join(ctx: commands.Context) -> None:
-            """Join the author's voice channel and start listening."""
-            if not ctx.author.voice:
+        @bot.command(name="transcript", aliases=["join", "start", "listen"])
+        async def cmd_transcript(ctx: commands.Context) -> None:
+            """Join your voice channel and post the transcript to a text channel."""
+            if ctx.author.voice is None or ctx.author.voice.channel is None:
                 await ctx.send("❌ You are not in a voice channel.")
                 return
 
-            channel = ctx.author.voice.channel
+            voice_channel = ctx.author.voice.channel
+
+            if transcript_cfg.channel_id:
+                target = bot.get_channel(transcript_cfg.channel_id)
+                if target is None:
+                    await ctx.send(
+                        "❌ TRANSCRIPT_CHANNEL_ID points at a channel I cannot see."
+                    )
+                    return
+            else:
+                target = ctx.channel
+
+            already = (
+                ctx.voice_client is not None
+                and ctx.voice_client.channel == voice_channel
+                and self._transcript_channel == target
+            )
+            if already:
+                await ctx.send(f"🎙️ Already listening in **{voice_channel}**.")
+                return
+
+            # Close out a running session before opening a new one.
+            if self._transcript_channel is not None:
+                await self._finalize_session()
+
+            self._transcript_channel = target
+            self._session_lines = []
+            self._pending = []
+            self._session_started_at = datetime.now(timezone.utc)
+            self._speaker_names = {}
+            self._last_result_at = time.monotonic()
 
             if ctx.voice_client is not None:
-                await ctx.voice_client.move_to(channel)
+                await ctx.voice_client.move_to(voice_channel)
             else:
-                vc = await channel.connect(
+                vc = await voice_channel.connect(
                     cls=discord.ext.voice_recv.VoiceRecvClient,
                 )
                 vc.listen(STTAudioSink(self._audio_q))
 
-            await ctx.send(f"🎙️ Joined **{channel}** — listening.")
-            logger.info("Joined voice channel: %s", channel)
+            await target.send(
+                f"🎙️ Listening in **{voice_channel}** — transcript starts here. "
+                f"Use {discord_cfg.command_prefix}stop to finish."
+            )
+            logger.info("Transcribing %s into #%s", voice_channel, target)
 
-        @bot.command(name="leave")
-        async def cmd_leave(ctx: commands.Context) -> None:
-            """Leave the current voice channel."""
-            if ctx.voice_client:
-                self._send_command("FLUSH_ALL", None)
-                await ctx.voice_client.disconnect()
-                await ctx.send("👋 Left the voice channel.")
-                logger.info("Left voice channel.")
-            else:
+        @bot.command(name="stop", aliases=["leave", "disconnect"])
+        async def cmd_stop(ctx: commands.Context) -> None:
+            """Stop listening, post the consolidated transcript, and leave."""
+            if ctx.voice_client is None:
                 await ctx.send("❌ I am not in a voice channel.")
+                return
+
+            self._send_command("FLUSH_ALL", None)
+            await self._await_results_quiet()
+            await ctx.voice_client.disconnect()
+            await self._finalize_session()
+            await ctx.send("👋 Left the voice channel; transcript posted.")
 
     def _send_command(self, command: str, payload: object) -> None:
         try:
@@ -125,10 +183,10 @@ class STTBot:
         except Exception as exc:
             logger.error("Failed to send %s command: %s", command, exc)
 
-    # ── result polling ────────────────────────────
+    # -- result polling ----------------------------
 
     async def _poll_results(self) -> None:
-        """Async loop that drains the result queue and logs transcriptions."""
+        """Drain the result queue and feed the transcript channel."""
         logger.info("Result polling task started.")
         while True:
             try:
@@ -139,14 +197,10 @@ class STTBot:
                     except queue.Empty:
                         break
                     drained = True
-                    logger.info(
-                        "📝 [User %s] %s  (latency %s)",
-                        result["user_id"],
-                        result["text"],
-                        result["latency"],
-                    )
-                    # Pretty-print to console as well
-                    print(json.dumps(result, ensure_ascii=False))
+                    self._last_result_at = time.monotonic()
+                    self._handle_result(result)
+
+                await self._maybe_flush()
 
                 if drained:
                     await asyncio.sleep(0)
@@ -155,3 +209,162 @@ class STTBot:
             except Exception as exc:
                 logger.error("Result poll error: %s", exc)
                 await asyncio.sleep(1)
+
+    def _handle_result(self, result: dict) -> None:
+        """Format one utterance and queue it for posting."""
+        text = (result.get("text") or "").strip()
+        if not text:
+            return
+
+        name = self._speaker_name(result.get("user_id"))
+        logger.info(
+            "📝 [%s] %s (latency %s)",
+            name,
+            text,
+            result.get("latency"),
+        )
+
+        if self._transcript_channel is None:
+            return  # no active session; the log line is the only trace
+
+        line = f"**{name}** : {text}"
+        self._session_lines.append(line)
+        self._pending.append(line)
+
+    def _speaker_name(self, user_id: object) -> str:
+        """Resolve a Discord user id to a display name, with caching."""
+        try:
+            key = int(user_id)
+        except (TypeError, ValueError):
+            return "Unknown"
+
+        cached = self._speaker_names.get(key)
+        if cached is not None:
+            return cached
+
+        member = None
+        guild = getattr(self._transcript_channel, "guild", None)
+        if guild is not None:
+            member = guild.get_member(key)
+        if member is None:
+            member = self._bot.get_user(key)
+
+        name = None
+        if member is not None:
+            name = getattr(member, "display_name", None) or getattr(member, "name", None)
+
+        name = name or f"User {key}"
+        self._speaker_names[key] = name
+        return name
+
+    # -- transcript delivery -----------------------
+
+    async def _maybe_flush(self, *, force: bool = False) -> None:
+        """Post buffered lines, batched to stay clear of rate limits."""
+        channel = self._transcript_channel
+        if channel is None:
+            return
+
+        if not force:
+            if not self._pending:
+                return
+            due = (
+                time.monotonic() - self._last_flush
+                >= transcript_cfg.flush_interval_seconds
+                or len(self._pending) >= transcript_cfg.max_lines_per_message
+            )
+            if not due:
+                return
+
+        while self._pending:
+            chunk = self._take_chunk()
+            if not chunk:
+                break
+            self._last_flush = time.monotonic()
+            try:
+                await channel.send("\n".join(chunk))
+            except discord.HTTPException as exc:
+                logger.error("Could not post transcript chunk: %s", exc)
+                break
+            if not force:
+                break
+
+    def _take_chunk(self) -> list[str]:
+        """Pop lines for one message: capped by line count and char budget."""
+        chunk: list[str] = []
+        size = 0
+        while self._pending and len(chunk) < transcript_cfg.max_lines_per_message:
+            nxt = self._pending[0]
+            if chunk and size + len(nxt) + 1 > SAFE_MESSAGE_BUDGET:
+                break
+            chunk.append(self._pending.pop(0))
+            size += len(nxt) + 1
+        return chunk
+
+    async def _await_results_quiet(
+        self,
+        quiet_seconds: float = 0.8,
+        timeout: float = 6.0,
+    ) -> None:
+        """Wait until the STT process stops producing results (bounded)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if time.monotonic() - self._last_result_at >= quiet_seconds:
+                return
+            await asyncio.sleep(0.1)
+
+    async def _finalize_after_disconnect(self) -> None:
+        await self._await_results_quiet()
+        await self._finalize_session()
+
+    async def _finalize_session(self) -> None:
+        """Flush, post the consolidated transcript, and reset session state."""
+        channel = self._transcript_channel
+        lines = self._session_lines
+        started = self._session_started_at
+
+        await self._maybe_flush(force=True)
+
+        self._transcript_channel = None
+        self._session_lines = []
+        self._pending = []
+        self._session_started_at = None
+
+        if channel is None or not lines:
+            return
+
+        stamp = (started or datetime.now(timezone.utc)).astimezone()
+        body = (
+            f"# Transcription — {stamp:%Y-%m-%d %H:%M}\n\n"
+            + "\n".join(lines)
+            + "\n"
+        )
+
+        path = self._save_transcript(body, stamp)
+        try:
+            if len(body) <= SAFE_MESSAGE_BUDGET:
+                await channel.send(body)
+            elif path is not None:
+                await channel.send(
+                    f"📄 Full transcript — {len(lines)} utterances, "
+                    f"{stamp:%Y-%m-%d %H:%M}",
+                    file=discord.File(path),
+                )
+            else:
+                for start in range(0, len(body), SAFE_MESSAGE_BUDGET):
+                    await channel.send(body[start : start + SAFE_MESSAGE_BUDGET])
+        except discord.HTTPException as exc:
+            logger.error("Could not post final transcript: %s", exc)
+
+    def _save_transcript(self, body: str, stamp: datetime) -> Path | None:
+        """Write a local markdown copy; the channel post is the primary record."""
+        try:
+            out_dir = Path(transcript_cfg.save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / f"transcript-{stamp:%Y%m%d-%H%M%S}.md"
+            path.write_text(body, encoding="utf-8")
+            logger.info("Transcript saved to %s", path)
+            return path
+        except Exception as exc:
+            logger.error("Could not save transcript: %s", exc)
+            return None

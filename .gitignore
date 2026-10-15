@@ -12,3 +12,6 @@ __pycache__/
 venv/
 
 *.log
+
+# Local session transcripts (private; never commit)
+transcripts/

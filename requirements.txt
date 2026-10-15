@@ -1,5 +1,12 @@
-discord.py[voice]>=2.4,<3.0
-discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voice-recv@ac04ea7b0941112e83767cf1c1469b408fa06748
+# discord.py >= 2.7 is required for DAVE voice support, and needs 'davey'.
+discord.py[voice]>=2.7,<3.0
+davey>=0.1.0rc3
+
+# Upstream voice-recv cannot decrypt DAVE frames: bots join but receive garbled
+# opus ("corrupted stream") since Discord's March 2026 E2EE enforcement.
+# This fork decrypts through discord.py's DaveSession.
+# Upstream: https://github.com/imayhaveborkedit/discord-ext-voice-recv
+discord-ext-voice-recv @ git+https://github.com/idoldange/discord-ext-voice-recv
 faster-whisper>=1.1,<2.0
 numpy>=1.26,<3.0
 PyNaCl>=1.5,<2.0
