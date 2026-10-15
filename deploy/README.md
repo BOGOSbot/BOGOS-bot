@@ -152,3 +152,11 @@ These cost time to discover; do not re-derive them.
 
 The Worker has to exist before Discord will accept the endpoint URL: setting
 it triggers an immediate PING that the endpoint must answer.
+- **A body-less POST does not resume a box.** `fetch` with no body sends no
+  `Content-Length`, and Upstash answers 4xx; PowerShell's `Invoke-RestMethod`
+  always sends an empty body, so the same call succeeds there and hides the
+  bug. Send `body: "{}"`. This is what made `/wake` reply correctly while
+  the box stayed asleep: the interaction was fine, the resume was rejected.
+- **Diagnose a stuck wake with `GET /?diag=<DIAG_TOKEN>`.** It runs the real
+  resume and returns the upstream status and body, so the failure is visible
+  instead of being swallowed by `ctx.waitUntil`.
