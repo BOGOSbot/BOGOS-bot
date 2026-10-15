@@ -46,7 +46,15 @@ class STTAudioSink(AudioSink):
             return
         try:
             resampled = self._resampler.resample(data.pcm)
-            self._queue.put_nowait((user.id, resampled))
+            # Carry the display name alongside the audio. Resolving it later
+            # depends on discord.py's member cache, which stays empty without
+            # the privileged members intent -- that is what produced "User <id>".
+            name = (
+                getattr(user, "display_name", None)
+                or getattr(user, "name", None)
+                or str(user.id)
+            )
+            self._queue.put_nowait((user.id, name, resampled))
         except queue.Full:
             self._dropped_frames += 1
             now = time.monotonic()

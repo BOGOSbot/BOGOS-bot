@@ -65,6 +65,7 @@ class STTProcessor:
 
         self._users = UserStateManager(vad_iterator_factory=self._vad.create_iterator)
         self._dump_n = 0
+        self._names: dict[int, str] = {}
 
         # Utterances waiting for the model. Unbounded on purpose: when the CPU
         # cannot keep up the transcript falls behind, but no speech is lost.
@@ -108,6 +109,9 @@ class STTProcessor:
                     continue
                 result = self._transcriber.transcribe(user_id, audio)
                 if result:
+                    # Travel with the audio so the bot never has to look the
+                    # name up in a cache that may not hold it.
+                    result.setdefault("name", self._names.get(user_id, ""))
                     self._put_result(result)
             except Exception as exc:
                 logger.error("Transcription failed for user %s: %s", user_id, exc)
@@ -191,12 +195,21 @@ class STTProcessor:
     def _process_audio(self) -> None:
         """Pull one chunk from the audio queue and feed it through VAD."""
         try:
-            user_id, pcm_data = self._audio_q.get(timeout=0.1)
+            item = self._audio_q.get(timeout=0.1)
         except queue.Empty:
             return
         except Exception as exc:
             logger.error("Audio queue error: %s", exc)
             return
+
+        # Accept both the sink's (id, name, pcm) triple and a bare (id, pcm).
+        if len(item) == 3:
+            user_id, display_name, pcm_data = item
+        else:
+            user_id, pcm_data = item
+            display_name = ""
+        if display_name:
+            self._names[user_id] = display_name
 
         state = self._users.get_or_create(user_id)
         state.raw_buffer.extend(pcm_data)

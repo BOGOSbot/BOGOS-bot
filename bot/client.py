@@ -141,7 +141,7 @@ class STTBot:
 
             # Close out a running session before opening a new one.
             if self._transcript_channel is not None:
-                await self._finalize_session()
+                await self._close_session()
 
             self._transcript_channel = target
             self._session_lines = []
@@ -166,7 +166,7 @@ class STTBot:
 
         @bot.command(name="stop", aliases=["leave", "disconnect"])
         async def cmd_stop(ctx: commands.Context) -> None:
-            """Stop listening, post the consolidated transcript, and leave."""
+            """Stop listening once everything queued is transcribed, and leave."""
             if ctx.voice_client is None:
                 await ctx.send("❌ I am not in a voice channel.")
                 return
@@ -174,14 +174,11 @@ class STTBot:
             # Clear before flushing so a fast drain signal cannot be missed.
             self._drained.clear()
             self._send_command("FLUSH_ALL", None)
-            await ctx.send(
-                "⏳ Stopped listening. Finishing the queued speech — the "
-                "transcript follows once the backlog is transcribed."
-            )
+            await ctx.send("⏳ Finishing the queued speech...")
             await self._await_drain()
             await ctx.voice_client.disconnect()
-            await self._finalize_session()
-            await ctx.send("👋 Left the voice channel; transcript posted.")
+            await self._close_session()
+            await ctx.send("👋 Left the voice channel.")
 
     def _send_command(self, command: str, payload: object) -> None:
         try:
@@ -227,7 +224,9 @@ class STTBot:
         if not text:
             return
 
-        name = self._speaker_name(result.get("user_id"))
+        name = (result.get("name") or "").strip() or self._speaker_name(
+            result.get("user_id")
+        )
         logger.info(
             "📝 [%s] %s (latency %s)",
             name,
@@ -329,10 +328,15 @@ class STTBot:
 
     async def _finalize_after_disconnect(self) -> None:
         await self._await_drain()
-        await self._finalize_session()
+        await self._close_session()
 
-    async def _finalize_session(self) -> None:
-        """Flush, post the consolidated transcript, and reset session state."""
+    async def _close_session(self) -> None:
+        """Flush what is buffered, keep a local copy, and reset.
+
+        The channel is already the transcript: lines are posted live as they
+        are transcribed, so replaying them at the end would duplicate every
+        word. Only the local markdown copy is written here.
+        """
         channel = self._transcript_channel
         lines = self._session_lines
         started = self._session_started_at
@@ -353,22 +357,7 @@ class STTBot:
             + "\n".join(lines)
             + "\n"
         )
-
-        path = self._save_transcript(body, stamp)
-        try:
-            if len(body) <= SAFE_MESSAGE_BUDGET:
-                await channel.send(body)
-            elif path is not None:
-                await channel.send(
-                    f"📄 Full transcript — {len(lines)} utterances, "
-                    f"{stamp:%Y-%m-%d %H:%M}",
-                    file=discord.File(path),
-                )
-            else:
-                for start in range(0, len(body), SAFE_MESSAGE_BUDGET):
-                    await channel.send(body[start : start + SAFE_MESSAGE_BUDGET])
-        except discord.HTTPException as exc:
-            logger.error("Could not post final transcript: %s", exc)
+        self._save_transcript(body, stamp)
 
     def _save_transcript(self, body: str, stamp: datetime) -> Path | None:
         """Write a local markdown copy; the channel post is the primary record."""
