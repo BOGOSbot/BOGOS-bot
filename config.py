@@ -99,10 +99,13 @@ class VADConfig:
 # ──────────────────────────────────────────────
 @dataclass(frozen=True)
 class STTConfig:
+    # Default tuned for CPU-only use on a French voice channel. Upstream
+    # shipped large-v3-turbo, which needs a GPU. Measured French WER here:
+    # base 24.6%, small 10.2% -- and small still runs at 1.2x realtime.
     model_id: str = field(
         default_factory=lambda: _env_str(
             "STT_MODEL_ID",
-            "deepdml/faster-whisper-large-v3-turbo-ct2",
+            "small",
         )
     )
     device: str = field(default_factory=lambda: _env_str("STT_DEVICE", "cuda"))
