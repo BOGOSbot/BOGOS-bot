@@ -111,9 +111,12 @@ endpoint. Doing this through the Developer Portal UI is fine.
 
 ## Known unknown
 
-**Wake latency is unmeasured.** If a resume takes 45 s, `/wake` must be used
-well before anyone wants to talk. Measure it on the first deployment and
-adjust the wording in `worker.js`.
+**Measured: 23 s** from resume to the bot process running, so `/wake` then
+`!transcript` is comfortable but not instant.
+
+**Pending on the owner:** the bot was invited with `scope=bot` only, so
+`/wake` exists but cannot be used in the guild until the app is re-authorised
+with `applications.commands`.
 ## Measured on the real box (2026-10-15)
 
 These cost time to discover; do not re-derive them.
@@ -141,10 +144,11 @@ These cost time to discover; do not re-derive them.
 |---|---|
 | Box `workable-chimp-76364` | created, deps installed, `.env` in place |
 | `initCommand` | `sh /workspace/home/discord-transcriber/deploy/box/start-bot.sh` |
-| Bot on the box | verified: logs in, VAD + Voxtral backend ready |
+| Bot on the box | verified: logs in, VAD + Voxtral ready, idle exit armed |
+| Wake latency | **23 s** measured from resume to bot running |
 | `/wake` slash command | registered globally (propagates within the hour) |
-| Cloudflare Worker | **not built** — needs a Cloudflare account |
-| Interactions Endpoint URL | **not set** — needs the Worker first |
+| Cloudflare Worker | **deployed**: `discord-transcriber-wake.truand-sournois.workers.dev` |
+| Interactions Endpoint URL | **set and verified (HTTP 200)** |
 
 The Worker has to exist before Discord will accept the endpoint URL: setting
 it triggers an immediate PING that the endpoint must answer.
