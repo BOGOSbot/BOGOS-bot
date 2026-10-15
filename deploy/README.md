@@ -114,9 +114,8 @@ endpoint. Doing this through the Developer Portal UI is fine.
 **Measured: 23 s** from resume to the bot process running, so `/wake` then
 `!transcript` is comfortable but not instant.
 
-**Pending on the owner:** the bot was invited with `scope=bot` only, so
-`/wake` exists but cannot be used in the guild until the app is re-authorised
-with `applications.commands`.
+`/wake` is gone, so prefix commands are the whole interface again and the
+`applications.commands` scope is not needed.
 ## Measured on the real box (2026-10-15)
 
 These cost time to discover; do not re-derive them.
@@ -138,20 +137,27 @@ These cost time to discover; do not re-derive them.
   commands exist but cannot be used in the guild:
   `https://discord.com/oauth2/authorize?client_id=<APP_ID>&permissions=1051648&scope=bot%20applications.commands`
 
-## State
+## Outcome: torn down (2026-10-16)
 
-| piece | state |
-|---|---|
-| Box `workable-chimp-76364` | created, deps installed, `.env` in place |
-| `initCommand` | `sh /workspace/home/discord-transcriber/deploy/box/start-bot.sh` |
-| Bot on the box | verified: logs in, VAD + Voxtral ready, idle exit armed |
-| Wake latency | **23 s** measured from resume to bot running |
-| `/wake` slash command | registered globally (propagates within the hour) |
-| Cloudflare Worker | **deployed**: `discord-transcriber-wake.truand-sournois.workers.dev` |
-| Interactions Endpoint URL | **set and verified (HTTP 200)** |
+The pattern works. It is not usable for this bot.
 
-The Worker has to exist before Discord will accept the endpoint URL: setting
-it triggers an immediate PING that the endpoint must answer.
+Every piece was verified working: the Worker woke the box, the box resumed,
+`initCommand` restored the bot, and a paused box had the bot running **23
+seconds** later. Then the bot joined a voice channel and heard nothing.
+
+**A Box cannot send UDP beyond DNS**, even with `network_policy` already set
+to `allow-all`. Discord voice media is UDP/SRTP with no TCP fallback, so the
+websocket handshake completes (`Voice handshake complete. Endpoint found:
+c-ewr17-...`) and the connection then times out. No configuration fixes it.
+
+The box, the Worker, the `/wake` command and the Interactions Endpoint URL
+were all deleted. What remains in this folder is the pattern and the measured
+traps, kept because they are reusable for any workload that does not need UDP
+and because re-deriving them is expensive.
+
+A voice bot needs a host that allows outbound UDP: this PC does, and so would
+a small EU VPS or a home mini-PC. On an always-on host the entire wake layer
+is unnecessary — set `IDLE_EXIT_MINUTES=0` and run the bot directly.
 - **A body-less POST does not resume a box.** `fetch` with no body sends no
   `Content-Length`, and Upstash answers 4xx; PowerShell's `Invoke-RestMethod`
   always sends an empty body, so the same call succeeds there and hides the
