@@ -114,3 +114,37 @@ endpoint. Doing this through the Developer Portal UI is fine.
 **Wake latency is unmeasured.** If a resume takes 45 s, `/wake` must be used
 well before anyone wants to talk. Measure it on the first deployment and
 adjust the wording in `worker.js`.
+## Measured on the real box (2026-10-15)
+
+These cost time to discover; do not re-derive them.
+
+- **`/workspace` is root-owned.** Creating anything directly under it fails
+  with `Permission denied`. `/workspace/home` is the box user's cwd and is
+  writable, so the app lives at `/workspace/home/discord-transcriber`.
+- **`sudo` works headlessly** for `apt-get` (the box user is a sudoer).
+- **The box is arm64**, and the PyTorch CPU index serves aarch64 wheels, so
+  `torch --index-url https://download.pytorch.org/whl/cpu` installs fine.
+  Python on the box is 3.13.
+- **`files upload` handles a 33 KB tarball** — the chunked-base64 workaround
+  is only needed above ~1 MiB.
+- **Discord's API 403s an empty body for PowerShell's default User-Agent.**
+  `Invoke-RestMethod` against `/applications/...` fails that way while
+  `/users/@me/guilds` succeeds, which makes it look like a permission bug.
+  Send an explicit `User-Agent` (curl does what you expect).
+- **The invite must include the `applications.commands` scope**, or slash
+  commands exist but cannot be used in the guild:
+  `https://discord.com/oauth2/authorize?client_id=<APP_ID>&permissions=1051648&scope=bot%20applications.commands`
+
+## State
+
+| piece | state |
+|---|---|
+| Box `workable-chimp-76364` | created, deps installed, `.env` in place |
+| `initCommand` | `sh /workspace/home/discord-transcriber/deploy/box/start-bot.sh` |
+| Bot on the box | verified: logs in, VAD + Voxtral backend ready |
+| `/wake` slash command | registered globally (propagates within the hour) |
+| Cloudflare Worker | **not built** — needs a Cloudflare account |
+| Interactions Endpoint URL | **not set** — needs the Worker first |
+
+The Worker has to exist before Discord will accept the endpoint URL: setting
+it triggers an immediate PING that the endpoint must answer.
