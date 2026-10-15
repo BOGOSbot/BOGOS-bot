@@ -18,10 +18,12 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import wave
 from multiprocessing import Queue as MPQueue
+from pathlib import Path
 from typing import Optional, Tuple
 
-from config import audio_cfg, vad_cfg
+from config import api_cfg, audio_cfg, vad_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -47,12 +49,22 @@ class STTProcessor:
 
         # Heavy imports kept local to this process
         from stt.vad import VADWrapper
-        from stt.transcriber import Transcriber
         from stt.user_state import UserStateManager
 
         self._vad = VADWrapper()
-        self._transcriber = Transcriber()
+
+        # Only import the chosen backend, so the cloud path never pulls in torch.
+        if api_cfg.backend == "openrouter":
+            from stt.api_transcriber import ApiTranscriber
+
+            self._transcriber = ApiTranscriber()
+        else:
+            from stt.transcriber import Transcriber
+
+            self._transcriber = Transcriber()
+
         self._users = UserStateManager(vad_iterator_factory=self._vad.create_iterator)
+        self._dump_n = 0
 
         # Utterances waiting for the model. Unbounded on purpose: when the CPU
         # cannot keep up the transcript falls behind, but no speech is lost.
@@ -102,7 +114,28 @@ class STTProcessor:
             finally:
                 self._utterances.task_done()
 
+    def _dump(self, user_id: int, audio: bytes) -> None:
+        """Persist one utterance as WAV -- byte-for-byte what the model hears.
+
+        This is the only way to tell a model problem from a broken audio path.
+        """
+        if not api_cfg.dump_dir:
+            return
+        try:
+            out = Path(api_cfg.dump_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            self._dump_n += 1
+            path = out / f"{self._dump_n:04d}-u{user_id}.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(audio_cfg.output_channels)
+                w.setsampwidth(audio_cfg.sample_width)
+                w.setframerate(audio_cfg.output_sample_rate)
+                w.writeframes(audio)
+        except Exception as exc:
+            logger.error("Utterance dump failed: %s", exc)
+
     def _enqueue(self, user_id: int, audio: bytes) -> None:
+        self._dump(user_id, audio)
         depth = self._utterances.qsize()
         if depth >= 25 and depth - self._warned_at >= 25:
             self._warned_at = depth

@@ -170,6 +170,35 @@ class LogConfig:
 
 
 # ──────────────────────────────────────────────
+# Cloud STT (OpenRouter /audio/transcriptions)
+# ──────────────────────────────────────────────
+@dataclass(frozen=True)
+class APIConfig:
+    """Cloud transcription backend, used when the local CPU is not enough.
+
+    Prices on OpenRouter's STT endpoint are per second of audio, so even the
+    expensive models cost well under $1 per hour of speech.
+    """
+    backend: str = field(
+        default_factory=lambda: _env_str("STT_BACKEND", "local")
+    )  # "local" (faster-whisper) or "openrouter"
+    openrouter_key: str = field(
+        default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
+    )
+    model: str = field(
+        default_factory=lambda: _env_str(
+            "STT_API_MODEL", "mistralai/voxtral-mini-3b-2507"
+        )
+    )
+    timeout_seconds: float = field(
+        default_factory=lambda: _env_float("STT_API_TIMEOUT", 120.0)
+    )
+    # Write every utterance here as a WAV (empty = off). For diagnosis: it is
+    # exactly the audio the transcriber receives.
+    dump_dir: str = field(default_factory=lambda: _env_str("STT_DUMP_DIR", ""))
+
+
+# ──────────────────────────────────────────────
 # Transcript output
 # ──────────────────────────────────────────────
 @dataclass(frozen=True)
@@ -199,6 +228,7 @@ discord_cfg = DiscordConfig()
 audio_cfg = AudioConfig()
 vad_cfg = VADConfig()
 stt_cfg = STTConfig()
+api_cfg = APIConfig()
 transcript_cfg = TranscriptConfig()
 process_cfg = ProcessConfig()
 log_cfg = LogConfig()
