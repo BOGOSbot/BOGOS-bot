@@ -247,7 +247,11 @@ $timer.Add_Tick($refresh)
 $timer.Start()
 
 & $refresh
-[void]$form.ShowDialog()
+# Application::Run, not ShowDialog. ShowDialog runs a MODAL loop, and Hide()
+# ends a modal loop, so minimising fell straight through to the cleanup, disposed
+# the tray icon and killed the window. Application::Run keeps the message loop
+# alive while the form is hidden, which is what minimising to the tray needs.
+[System.Windows.Forms.Application]::Run($form)
 $timer.Stop()
 $tray.Visible = $false
 $tray.Dispose()
