@@ -135,6 +135,11 @@ class STTConfig:
     min_speech_dbfs: float = field(
         default_factory=lambda: _env_float("STT_MIN_SPEECH_DBFS", -60.0)
     )
+    # A VAD segment shorter than this is padding and a click, not a word:
+    # with 200ms of pad on each side, 0.5s leaves under 100ms of anything.
+    min_utterance_seconds: float = field(
+        default_factory=lambda: _env_float("STT_MIN_UTTERANCE_SECONDS", 0.5)
+    )
     # 2. Level: lift quiet speakers toward a consistent target. Real speech in
     #    the dumps ranged from -52 to -15 dBFS, which is a lot of lost signal.
     normalize_dbfs: float = field(

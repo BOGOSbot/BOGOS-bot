@@ -28,6 +28,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from config import api_cfg, audio_cfg, process_cfg, stt_cfg, vad_cfg
+from stt import artifacts
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -96,6 +97,7 @@ class STTProcessor:
         self._dump_n = 0
         self._names: dict[int, str] = {}
         self._dropped_quiet = 0
+        self._dropped_short = 0
 
         # Utterances waiting for a worker: (seq, user_id, pcm). Unbounded on
         # purpose: falling behind must delay the transcript, never lose speech.
@@ -165,6 +167,12 @@ class STTProcessor:
                 result = self._transcriber.transcribe(user_id, audio)
                 if result and not self._plausible(result, audio):
                     result = None  # Guard 3: invented, whatever its level.
+                if result and artifacts.is_artifact(result.get("text", "")):
+                    logger.warning(
+                        "Discarded memorised ASR artifact: %s",
+                        (result.get("text") or "")[:70],
+                    )
+                    result = None  # Guard 4: a subtitle credit, never speech.
                 if result:
                     result["seq"] = seq
                     result.setdefault("name", self._names.get(user_id, ""))
@@ -225,6 +233,23 @@ class STTProcessor:
 
     def _enqueue(self, user_id: int, audio: bytes) -> None:
         self._dump(user_id, audio)
+
+        # Guard 0: a segment shorter than the VAD padding cannot hold a word.
+        # 8 of 77 recorded utterances were under 0.5s; with 200ms of pad on
+        # each side that leaves under 100ms of anything, which is a click or
+        # a breath - and the model answers those with something fluent.
+        seconds = len(audio) / (
+            audio_cfg.output_sample_rate * audio_cfg.sample_width
+        )
+        if seconds < stt_cfg.min_utterance_seconds:
+            self._dropped_short += 1
+            if self._dropped_short % 10 == 1:
+                logger.info(
+                    "Dropped %d too-short utterance(s); last was %.2fs.",
+                    self._dropped_short,
+                    seconds,
+                )
+            return
 
         # Guard 1: silence is not speech. ASR models answer silence with
         # invented fluent text rather than an empty string.
