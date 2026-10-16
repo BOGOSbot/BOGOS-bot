@@ -197,7 +197,10 @@ def parse(csv_text: str) -> Report:
 
 
 def collect(sheet_id: str) -> tuple[list[TabReport], list[str]]:
-    """Every tab that parses as a pairing table, plus the tabs skipped."""
+    """Every tab that parses as a pairing table, plus the tabs skipped.
+
+    The skipped list is returned for logging rather than for display.
+    """
     found: list[TabReport] = []
     skipped: list[str] = []
     tabs = list_tabs(sheet_id)
@@ -226,11 +229,15 @@ def _who(player: Player, mentions: dict[str, int]) -> str:
 
 def render(
     tabs: list[TabReport],
-    skipped: list[str],
     mentions: dict[str, int],
     limit: int = 1900,
 ) -> str:
-    """One section per team, so a ping is always attributable to a matchup."""
+    """One section per team, so a ping is always attributable to a matchup.
+
+    Skipped tabs are deliberately not listed: a team tab going missing is a
+    thing the group notices from the result itself, so printing the ignore list
+    only adds noise to every well-behaved run. It is logged instead.
+    """
     if not tabs:
         return "Aucun onglet de pairing trouve dans cette feuille."
 
@@ -250,10 +257,6 @@ def render(
             )
         for player in missing_liste:
             lines.append(f"- {_who(player, mentions)} : liste - {player.liste_label}")
-
-    if skipped:
-        lines.append("")
-        lines.append("_Onglets ignores : " + ", ".join(skipped) + "_")
 
     text = "\n".join(lines)
     if len(text) > limit:

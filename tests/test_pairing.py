@@ -113,15 +113,12 @@ def test_the_summary_sections_by_team_and_pings_only_mapped_players() -> None:
         _row(head, "Fab", 6, "Avec", ""),
         _row(head, "", 0, "Sans"),
     ))
-    text = pairing.render(
-        [pairing.TabReport("Yokai", yokai)],
-        ["Stats", "Annexe"],
-        {"Nathan": 4242},
-    )
+    text = pairing.render([pairing.TabReport("Yokai", yokai)], {"Nathan": 4242})
     assert "**Yokai**" in text
     assert "<@4242> (Nathan)" in text
     assert "**Fab**" in text
-    assert "Onglets ignores" in text
+    # The ignore list stays out of the message on purpose.
+    assert "ignores" not in text
 
 
 def test_the_summary_says_so_when_every_team_is_complete() -> None:
@@ -131,5 +128,5 @@ def test_the_summary_says_so_when_every_team_is_complete() -> None:
         _row(head, "Fab", 6, "Avec", "OK"),
         _row(head, "", 0, "Sans"),
     ))
-    text = pairing.render([pairing.TabReport("Immat", ok)], [], {})
+    text = pairing.render([pairing.TabReport("Immat", ok)], {})
     assert "Tout est bon." in text

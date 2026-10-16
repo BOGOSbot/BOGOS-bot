@@ -293,7 +293,9 @@ class STTBot:
                     await ctx.send(f"❌ Could not read the pairing sheet: {exc}")
                     return
 
-            await ctx.send(pairing.render(tabs, skipped, pairing_cfg.mentions))
+            if skipped:
+                logger.debug("Pairing tabs skipped: %s", ", ".join(skipped))
+            await ctx.send(pairing.render(tabs, pairing_cfg.mentions))
             self._note_activity()
 
     def _send_command(self, command: str, payload: object) -> None:
