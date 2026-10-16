@@ -270,25 +270,30 @@ class STTBot:
             self._note_activity()
 
         @bot.command(name="pairing", aliases=["table", "sheet"])
-        async def cmd_pairing(ctx: commands.Context) -> None:
-            """Post who has filled their matchups, and who still owes a list."""
-            if not pairing_cfg.sheet_id:
-                await ctx.send("❌ PAIRING_SHEET_ID is not set.")
+        async def cmd_pairing(ctx: commands.Context, link: str = "") -> None:
+            """Report every team tab of a pairing workbook, in one message.
+
+            Takes a Sheets link; with none, PAIRING_SHEET_ID is used. One
+            workbook is one tournament, one tab is one opposing team.
+            """
+            target = link.strip() or pairing_cfg.sheet_id
+            if not target:
+                await ctx.send("Usage: !pairing <lien google sheets>")
                 return
 
             async with ctx.typing():
                 try:
                     # urllib blocks; keep it off the event loop.
-                    csv_text = await asyncio.to_thread(
-                        pairing.fetch_csv, pairing_cfg.sheet_id, pairing_cfg.gid
+                    sheet_id = pairing.sheet_id_from(target)
+                    tabs, skipped = await asyncio.to_thread(
+                        pairing.collect, sheet_id
                     )
-                    report = pairing.parse(csv_text)
                 except Exception as exc:
                     logger.exception("Could not read the pairing sheet.")
                     await ctx.send(f"❌ Could not read the pairing sheet: {exc}")
                     return
 
-            await ctx.send(pairing.render(report, pairing_cfg.mentions))
+            await ctx.send(pairing.render(tabs, skipped, pairing_cfg.mentions))
             self._note_activity()
 
     def _send_command(self, command: str, payload: object) -> None:

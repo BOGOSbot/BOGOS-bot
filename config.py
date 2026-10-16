@@ -329,8 +329,8 @@ class PairingConfig:
     account is wired in.
     """
 
+    # Fallback used when !pairing is given no link.
     sheet_id: str = field(default_factory=lambda: _env_str("PAIRING_SHEET_ID", ""))
-    gid: str = field(default_factory=lambda: _env_str("PAIRING_GID", "0"))
     # "Mandal=123456789012345678" - unmapped names still appear, without a ping.
     mentions: dict[str, int] = field(
         default_factory=lambda: _parse_mentions(_env_str("PAIRING_MENTIONS", ""))

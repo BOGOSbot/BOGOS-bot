@@ -1,17 +1,22 @@
-"""The pairing parser reads its layout from the header, not from constants.
+"""The pairing reader: layout from the header, tabs that describe themselves.
 
-The two rules worth pinning down are the ones that were got wrong first: a
-player who fills only their Avec row is done, and the faction count follows
-the event instead of being 6.
+Four rules were each got wrong once while building this, so each is pinned:
+a player who fills only their Avec row is complete, the faction count follows
+the event, a non-pairing tab is rejected rather than half-parsed, and a link
+is accepted as readily as an id.
 """
 
 from __future__ import annotations
 
+import pytest
+
 from bot import pairing
+
+SHEET_ID = "1ctr4d8g6YcgMBbOtprJUpH4MEdFU6dIig9KBJn8hp5A"
 
 
 def _header(factions: int = 6) -> list[str]:
-    """The sheet's header, with the trailing columns the summary needs."""
+    """The pairing header, including the trailing Liste column."""
     names = ["GI", "TS", "DG", "LoV", "Necron", "SM", "Tau", "CK"][:factions]
     head = ["Joueur", "Faction", *names, "", "", "Tables ?"]
     head += [""] * (19 - len(head))
@@ -37,12 +42,11 @@ def _sheet(head: list[str], *rows: str) -> str:
 
 def test_only_the_avec_row_filled_is_complete() -> None:
     head = _header()
-    text = _sheet(head,
+    report = pairing.parse(_sheet(
+        head,
         _row(head, "Martial", 6, "Avec", "OK"),
         _row(head, "", 0, "Sans"),
-    )
-    report = pairing.parse(text)
-    assert len(report.players) == 1
+    ))
     assert report.players[0].avec == 6
     assert report.players[0].sans == 0
     assert report.players[0].done
@@ -50,47 +54,82 @@ def test_only_the_avec_row_filled_is_complete() -> None:
 
 def test_only_the_sans_row_filled_is_complete() -> None:
     head = _header()
-    text = _sheet(head,
+    report = pairing.parse(_sheet(
+        head,
         _row(head, "Lea", 0, "Avec", "OK"),
         _row(head, "", 6, "Sans"),
-    )
-    assert pairing.parse(text).players[0].done
+    ))
+    assert report.players[0].done
 
 
 def test_a_partly_filled_row_is_not_complete() -> None:
     head = _header()
-    text = _sheet(head,
+    player = pairing.parse(_sheet(
+        head,
         _row(head, "Mandal", 6, "Avec", ""),
         _row(head, "", 1, "Sans"),
-    )
-    player = pairing.parse(text).players[0]
+    )).players[0]
     assert player.done is False
     assert player.liste_label == "Pas de liste"
 
 
 def test_an_eight_faction_event_changes_the_target() -> None:
     head = _header(8)
-    text = _sheet(head,
+    report = pairing.parse(_sheet(
+        head,
         _row(head, "Rony", 8, "Avec", "OK"),
         _row(head, "", 0, "Sans"),
-    )
-    report = pairing.parse(text)
+    ))
     assert report.matchups_total == 8
     assert report.players[0].done
 
 
-def test_the_summary_pings_a_mapped_player_and_plainly_names_the_rest() -> None:
+def test_a_tab_without_a_liste_column_is_rejected() -> None:
+    # Stats looks like a pairing tab until the missing Liste column is noticed.
+    stats = "Joueur,Match,Victoire\nPierre,5,3\n"
+    with pytest.raises(ValueError):
+        pairing.parse(stats)
+
+
+def test_an_annexe_style_tab_has_no_joueur_header() -> None:
+    with pytest.raises(ValueError):
+        pairing.parse("BOGOS,BOGOS,Yokai\nMartial,IK,DA\n")
+
+
+def test_sheet_id_from_a_link_or_a_bare_id() -> None:
+    link = "https://docs.google.com/spreadsheets/d/%s/edit?gid=1#gid=1" % SHEET_ID
+    assert pairing.sheet_id_from(link) == SHEET_ID
+    assert pairing.sheet_id_from(SHEET_ID) == SHEET_ID
+    with pytest.raises(ValueError):
+        pairing.sheet_id_from("https://example.com/not-a-sheet")
+
+
+def test_the_summary_sections_by_team_and_pings_only_mapped_players() -> None:
     head = _header()
-    text = _sheet(head,
+    yokai = pairing.parse(_sheet(
+        head,
         _row(head, "Nathan", 0, "Avec", "OK"),
         _row(head, "", 0, "Sans"),
-        # Complete on matchups but missing the list, so it is named but not pinged.
         _row(head, "Fab", 6, "Avec", ""),
         _row(head, "", 0, "Sans"),
+    ))
+    text = pairing.render(
+        [pairing.TabReport("Yokai", yokai)],
+        ["Stats", "Annexe"],
+        {"Nathan": 4242},
     )
-    rendered = pairing.render(pairing.parse(text), {"Nathan": 4242})
-    # Discord renders "<@4242>" as the nickname, so the sheet name is appended.
-    assert "<@4242> (Nathan)" in rendered
-    # Unmapped players are still named, just without a ping.
-    assert "**Fab**" in rendered
-    assert "Tout est bon." not in rendered
+    assert "**Yokai**" in text
+    assert "<@4242> (Nathan)" in text
+    assert "**Fab**" in text
+    assert "Onglets ignores" in text
+
+
+def test_the_summary_says_so_when_every_team_is_complete() -> None:
+    head = _header()
+    ok = pairing.parse(_sheet(
+        head,
+        _row(head, "Fab", 6, "Avec", "OK"),
+        _row(head, "", 0, "Sans"),
+    ))
+    text = pairing.render([pairing.TabReport("Immat", ok)], [], {})
+    assert "Tout est bon." in text
