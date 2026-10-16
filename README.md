@@ -30,7 +30,7 @@ Set `DISCORD_TOKEN` in `.env`. Turn on the Message Content intent in the Discord
 .venv/bin/python main.py
 ```
 
-On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio.
+On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio. `widget/BOGOS-widget.ps1` is a small always-on-top panel with a start/stop toggle. It can only show a log for bots it started itself.
 
 ## Caveats
 
