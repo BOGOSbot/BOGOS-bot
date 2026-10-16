@@ -347,10 +347,10 @@ def render(
         for player in missing_matchups:
             filled = max(player.avec, player.sans)
             lines.append(
-                f"- {_who(player, resolver)} : matchups {filled}/{entry.report.matchups_total}"
+                f"- {_who(player, resolver)} : Estim\u00e9s {filled}/{entry.report.matchups_total}"
             )
         for player in missing_liste:
-            lines.append(f"- {_who(player, resolver)} : liste - {player.liste_label}")
+            lines.append(f"- {_who(player, resolver)} : {player.liste_label}")
 
     text = "\n".join(lines)
     if len(text) > limit:
