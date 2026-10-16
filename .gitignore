@@ -29,3 +29,6 @@ wrangler.toml.bak
 
 # Widget window position, local to this machine.
 widget-state.json
+
+# The widget's recording switch, local to this machine.
+recording.json

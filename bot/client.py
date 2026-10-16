@@ -21,6 +21,7 @@ import discord
 import discord.ext.voice_recv
 from discord.ext import commands
 
+import recording
 from bot import pairing
 from bot.audio_sink import STTAudioSink
 from bot.cleanup import clean_lines, render_diff
@@ -221,9 +222,12 @@ class STTBot:
                         cls=discord.ext.voice_recv.VoiceRecvClient,
                         timeout=60.0,
                     )
-                    # One recording per session; a no-op unless RECORD_DIR is set.
+                    # Asked per session rather than read once at import, so
+                    # the widget's switch applies without a restart. A no-op
+                    # unless recording is on.
                     self._recorder = ChannelRecorder(
-                        audio_cfg.record_dir, audio_cfg.output_sample_rate
+                        recording.current().session_dir,
+                        audio_cfg.output_sample_rate,
                     )
                     vc.listen(STTAudioSink(self._audio_q, self._recorder))
             except asyncio.TimeoutError:

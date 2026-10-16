@@ -27,6 +27,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+import recording
 from config import api_cfg, audio_cfg, process_cfg, stt_cfg, vad_cfg
 from stt import artifacts
 from utils.logging import get_logger
@@ -375,10 +376,13 @@ class STTProcessor:
 
     def _dump(self, user_id: int, audio: bytes) -> None:
         """Persist one utterance as WAV -- byte-for-byte what the model hears."""
-        if not api_cfg.dump_dir:
+        # Asked per utterance, so switching recording off stops the very next
+        # one rather than the next restart.
+        dump_dir = recording.current().dump_dir
+        if not dump_dir:
             return
         try:
-            out = Path(api_cfg.dump_dir)
+            out = Path(dump_dir)
             out.mkdir(parents=True, exist_ok=True)
             self._dump_n += 1
             path = out / f"{self._dump_n:04d}-u{user_id}.wav"

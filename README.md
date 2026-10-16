@@ -37,7 +37,7 @@ On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the sess
 - `STT_API_MODEL` defaults to `openai/gpt-transcribe`. We chose it on real French Warhammer speech, where it read the proper nouns that cheaper models replaced with common French words. A clean-speech benchmark had ranked it second, because that benchmark has no proper nouns in it. Do not trust it.
 - The silence floor (`STT_MIN_SPEECH_DBFS`) is set by eye. The 77 recorded utterances run from -96 to -40 dBFS with no gap in between, so there is nothing to tune it against yet.
 - `!pairing` reads the sheet over its public link export and sends no credentials. If the sheet is private, it will not work.
-- `RECORD_DIR` records other people's voices to disk. Ask them first.
+- Both the session recorder and the per-utterance dumps write other people's voices to disk. The widget's Record switch turns both off and picks the folder; that switch wins over `.env`. Ask people before you turn it on.
 - `CLEANUP_ENABLED` is off. A text pass cannot tell a misheard word from a real one, so it has nothing useful to do.
 - Only run on Windows so far, and only against French speech.
 

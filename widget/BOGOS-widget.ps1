@@ -20,6 +20,8 @@ $runner = Join-Path $root 'run.ps1'
 $logFile = Join-Path $root 'bot.log'
 $errFile = Join-Path $root 'bot.err.log'
 $stateFile = Join-Path $PSScriptRoot 'widget-state.json'
+# Shared with recording.py, which derives the same path from its own location.
+$recordingFile = Join-Path $root 'recording.json'
 
 function Get-BotProcess {
     # The bot is a python process running main.py. Nothing in this script's own
@@ -60,6 +62,33 @@ function Get-LastLogLine {
     if (-not $trimmed) { $trimmed = $line.Trim() }
     if ($trimmed.Length -gt 46) { $trimmed = $trimmed.Substring(0, 46) + '...' }
     return $trimmed
+}
+
+function Get-Recording {
+    if (-not (Test-Path $recordingFile)) { return @{ enabled = $false; folder = '' } }
+    try {
+        $d = Get-Content $recordingFile -Raw | ConvertFrom-Json
+        return @{ enabled = [bool]$d.enabled; folder = [string]$d.folder }
+    } catch {
+        return @{ enabled = $false; folder = '' }
+    }
+}
+
+function Set-Recording($enabled, $folder) {
+    # No BOM: Python parses this with json.loads. The two key names are the
+    # contract with recording.py, which pins them in its tests.
+    $json = @{ enabled = [bool]$enabled; folder = [string]$folder } | ConvertTo-Json
+    [System.IO.File]::WriteAllText($recordingFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Choose-Folder {
+    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dlg.Description = 'Where should the bot keep recordings?'
+    $dlg.ShowNewFolderButton = $true
+    $current = (Get-Recording).folder
+    if ($current -and (Test-Path $current)) { $dlg.SelectedPath = $current }
+    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return $dlg.SelectedPath }
+    return ''
 }
 
 function Get-Detail($proc) {
@@ -103,7 +132,7 @@ $form = New-Object System.Windows.Forms.Form
 $form.FormBorderStyle = 'None'
 $form.StartPosition = 'Manual'
 $form.Location = Load-Position
-$form.Size = New-Object System.Drawing.Size(320, 150)
+$form.Size = New-Object System.Drawing.Size(320, 190)
 # Not topmost: the panel should fall behind other windows like anything else.
 $form.TopMost = $false
 $form.ShowInTaskbar = $false
@@ -153,14 +182,14 @@ $detail = New-Object System.Windows.Forms.Label
 $detail.Text = ''
 $detail.Font = New-Object System.Drawing.Font('Consolas', 7.5)
 $detail.ForeColor = $muted
-$detail.Location = New-Object System.Drawing.Point(18, 122)
+$detail.Location = New-Object System.Drawing.Point(18, 164)
 $detail.Size = New-Object System.Drawing.Size(286, 16)
 $form.Controls.Add($detail)
 
 $toggle = New-Object System.Windows.Forms.Button
 $toggle.Text = 'Start'
 $toggle.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$toggle.Size = New-Object System.Drawing.Size(284, 40)
+$toggle.Size = New-Object System.Drawing.Size(284, 36)
 $toggle.Location = New-Object System.Drawing.Point(18, 74)
 $toggle.FlatStyle = 'Flat'
 $toggle.FlatAppearance.BorderSize = 0
@@ -168,6 +197,36 @@ $toggle.BackColor = $inkSoft
 $toggle.ForeColor = $paper
 $toggle.Cursor = [System.Windows.Forms.Cursors]::Hand
 $form.Controls.Add($toggle)
+
+$recordLabel = New-Object System.Windows.Forms.Label
+$recordLabel.Text = 'Record'
+$recordLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
+$recordLabel.ForeColor = $muted
+$recordLabel.Location = New-Object System.Drawing.Point(18, 122)
+$recordLabel.AutoSize = $true
+$form.Controls.Add($recordLabel)
+
+$recordBtn = New-Object System.Windows.Forms.Button
+$recordBtn.Text = 'Off'
+$recordBtn.Font = New-Object System.Drawing.Font('Segoe UI', 8.5, [System.Drawing.FontStyle]::Bold)
+$recordBtn.Size = New-Object System.Drawing.Size(58, 24)
+$recordBtn.Location = New-Object System.Drawing.Point(72, 117)
+$recordBtn.FlatStyle = 'Flat'
+$recordBtn.FlatAppearance.BorderSize = 0
+$recordBtn.BackColor = $inkSoft
+$recordBtn.ForeColor = $muted
+$recordBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+$recordBtn.ShowCellToolTips = $true
+$form.Controls.Add($recordBtn)
+
+$folderLbl = New-Object System.Windows.Forms.Label
+$folderLbl.Text = ''
+$folderLbl.Font = New-Object System.Drawing.Font('Segoe UI', 7.5)
+$folderLbl.ForeColor = $muted
+$folderLbl.Location = New-Object System.Drawing.Point(138, 122)
+$folderLbl.AutoSize = $true
+$folderLbl.Cursor = [System.Windows.Forms.Cursors]::Hand
+$form.Controls.Add($folderLbl)
 
 $refresh = {
     $proc = Get-BotProcess
@@ -186,7 +245,53 @@ $refresh = {
     }
     $detail.Text = Get-Detail $proc
     if ($tray) { $tray.Text = 'BOGOS bot: ' + $status.Text }
+
+    $rec = Get-Recording
+    if ($rec.enabled) {
+        $recordBtn.Text = 'On'
+        $recordBtn.ForeColor = $green
+    } else {
+        $recordBtn.Text = 'Off'
+        $recordBtn.ForeColor = $muted
+    }
+    if ($rec.folder) {
+        $tail = Split-Path $rec.folder -Leaf
+        $head = Split-Path (Split-Path $rec.folder -Parent) -Leaf
+        $shown = if ($head) { $head + '\' + $tail } else { $tail }
+        if ($shown.Length -gt 26) { $shown = '...' + $shown.Substring($shown.Length - 23) }
+        $folderLbl.Text = $shown
+    } else {
+        $folderLbl.Text = 'choose folder...'
+    }
+    $tip = 'Audio on disk: ' + $(if ($rec.enabled) { 'ON' } else { 'OFF' })
+    if ($rec.folder) { $tip = $tip + ' under ' + $rec.folder }
+    $tip = $tip + '. Applies at the next !transcript session.'
+    $recordBtn.ToolTipText = $tip
+    $folderLbl.ToolTipText = $tip
 }
+
+$recordBtn.Add_Click({
+    $rec = Get-Recording
+    if ($rec.enabled) {
+        Set-Recording $false $rec.folder
+    } else {
+        $folder = $rec.folder
+        if (-not $folder) {
+            $folder = Choose-Folder
+            if (-not $folder) { return }
+        }
+        Set-Recording $true $folder
+    }
+    & $refresh
+})
+
+$folderLbl.Add_Click({
+    $folder = Choose-Folder
+    if (-not $folder) { return }
+    $rec = Get-Recording
+    Set-Recording $rec.enabled $folder
+    & $refresh
+})
 
 $toggle.Add_Click({
     $toggle.Enabled = $false
