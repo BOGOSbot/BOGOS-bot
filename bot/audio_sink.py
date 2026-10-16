@@ -14,6 +14,7 @@ import discord
 from discord.ext.voice_recv import AudioSink, VoiceData
 
 from audio.resampler import AudioResampler
+from bot.recorder import ChannelRecorder
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,9 +26,12 @@ class STTAudioSink(AudioSink):
     16 kHz mono, and pushes (user_id, pcm_bytes) into the queue.
     """
 
-    def __init__(self, audio_queue: MPQueue) -> None:
+    def __init__(
+        self, audio_queue: MPQueue, recorder: ChannelRecorder | None = None
+    ) -> None:
         super().__init__()
         self._queue = audio_queue
+        self._recorder = recorder
         # ONE RESAMPLER PER SPEAKER. The resampler carries filter state, and
         # packets from different speakers arrive interleaved; sharing a single
         # instance would splice unrelated audio together.
@@ -64,6 +68,9 @@ class STTAudioSink(AudioSink):
                 or getattr(user, "name", None)
                 or str(user.id)
             )
+            # Record before queueing: a full queue must not cost the corpus.
+            if self._recorder is not None:
+                self._recorder.write(user.id, name, resampled)
             self._queue.put_nowait((user.id, name, resampled))
         except queue.Full:
             self._dropped_frames += 1

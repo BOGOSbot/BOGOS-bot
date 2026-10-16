@@ -24,7 +24,8 @@ from discord.ext import commands
 from bot import pairing
 from bot.audio_sink import STTAudioSink
 from bot.cleanup import clean_lines, render_diff
-from config import cleanup_cfg, discord_cfg, process_cfg, transcript_cfg
+from bot.recorder import ChannelRecorder
+from config import audio_cfg, cleanup_cfg, discord_cfg, process_cfg, transcript_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -43,6 +44,8 @@ class STTBot:
         command_queue: MPQueue,
     ) -> None:
         self._audio_q = audio_queue
+        # Corpus capture for the current session; None unless RECORD_DIR is set.
+        self._recorder: ChannelRecorder | None = None
         self._result_q = result_queue
         self._cmd_q = command_queue
         self._result_task: asyncio.Task | None = None
@@ -218,7 +221,11 @@ class STTBot:
                         cls=discord.ext.voice_recv.VoiceRecvClient,
                         timeout=60.0,
                     )
-                    vc.listen(STTAudioSink(self._audio_q))
+                    # One recording per session; a no-op unless RECORD_DIR is set.
+                    self._recorder = ChannelRecorder(
+                        audio_cfg.record_dir, audio_cfg.output_sample_rate
+                    )
+                    vc.listen(STTAudioSink(self._audio_q, self._recorder))
             except asyncio.TimeoutError:
                 logger.error("Voice connect to %s timed out.", voice_channel)
                 await ctx.send(
@@ -530,6 +537,10 @@ class STTBot:
         started = self._session_started_at
 
         await self._maybe_flush(force=True)
+
+        if self._recorder is not None:
+            self._recorder.close()
+            self._recorder = None
 
         self._transcript_channel = None
         self._session_lines = []

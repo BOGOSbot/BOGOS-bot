@@ -64,6 +64,10 @@ class AudioConfig:
     output_sample_rate: int = 16_000  # Whisper expected rate
     output_channels: int = 1          # Mono
     sample_width: int = 2             # int16 = 2 bytes per sample
+    # Write every speaker's audio here for corpus building (empty = off).
+    # Continuous and uncut by the VAD, so segmentation and thresholds can be
+    # re-tried on the same material instead of being recaptured.
+    record_dir: str = field(default_factory=lambda: _env_str("RECORD_DIR", ""))
 
 
 # ──────────────────────────────────────────────
