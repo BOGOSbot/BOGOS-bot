@@ -113,9 +113,12 @@ def test_the_summary_sections_by_team_and_pings_only_mapped_players() -> None:
         _row(head, "Fab", 6, "Avec", ""),
         _row(head, "", 0, "Sans"),
     ))
-    text = pairing.render([pairing.TabReport("Yokai", yokai)], {"Nathan": 4242})
+    text = pairing.render(
+        [pairing.TabReport("Yokai", yokai)],
+        pairing.Resolver(overrides={"Nathan": 4242}),
+    )
     assert "**Yokai**" in text
-    assert "<@4242> (Nathan)" in text
+    assert "<@4242>" in text
     assert "**Fab**" in text
     # The ignore list stays out of the message on purpose.
     assert "ignores" not in text
@@ -128,5 +131,75 @@ def test_the_summary_says_so_when_every_team_is_complete() -> None:
         _row(head, "Fab", 6, "Avec", "OK"),
         _row(head, "", 0, "Sans"),
     ))
-    text = pairing.render([pairing.TabReport("Immat", ok)], {})
+    text = pairing.render([pairing.TabReport("Immat", ok)], pairing.Resolver())
     assert "Tout est bon." in text
+
+# ---- name resolution ----------------------------------------------------
+
+def _roster() -> pairing.Resolver:
+    return pairing.Resolver(
+        members=pairing.index_members([
+            (1, "Kael38 (Martial)", "Martial", "kael38"),
+            (2, "Worldy (Léa)", None, "elyysm"),
+            (3, "Mandal (Olivier)", "Mandal", "mandal"),
+            (4, "Ekvar (Nathan)", None, "ekvar"),
+        ])
+    )
+
+
+def test_normalize_ignores_case_and_accents() -> None:
+    assert pairing.normalize("Léa") == pairing.normalize("lea")
+    assert pairing.normalize("  Rony ") == "rony"
+
+
+def test_a_nickname_splits_into_pseudo_and_prenom() -> None:
+    assert pairing.split_nickname("Kael38 (Martial)") == ("Kael38", "Martial")
+    assert pairing.split_nickname("Grim-mathis") == ("Grim-mathis", "")
+
+
+def test_the_roster_resolves_by_pseudo_or_by_prenom() -> None:
+    roster = _roster()
+    assert roster.resolve("Martial") == 1  # the prenom
+    assert roster.resolve("Lea") == 2  # accent-insensitive
+    assert roster.resolve("Mandal") == 3  # the pseudo, not Olivier
+    assert roster.resolve("Nathan") == 4
+
+
+def test_an_ambiguous_name_is_never_guessed() -> None:
+    roster = pairing.Resolver(
+        members=pairing.index_members([
+            (1, "A (Nathan)", None, "a"),
+            (2, "B (Nathan)", None, "b"),
+        ])
+    )
+    assert roster.resolve("Nathan") is None
+
+
+def test_a_unique_prefix_resolves_and_an_ambiguous_one_does_not() -> None:
+    one = pairing.Resolver(
+        members=pairing.index_members([(1, "CanapéLit (Fabien)", None, "canapelit")])
+    )
+    assert one.resolve("Fab") == 1
+    two = pairing.Resolver(
+        members=pairing.index_members([
+            (1, "A (Fabien)", None, "a"),
+            (2, "B (Fabrice)", None, "b"),
+        ])
+    )
+    assert two.resolve("Fab") is None
+
+
+def test_an_override_settles_what_the_roster_cannot() -> None:
+    roster = pairing.Resolver(overrides={"Mathis": 99}, members=_roster().members)
+    assert roster.resolve("Mathis") == 99
+
+
+def test_an_id_written_in_the_sheet_beats_name_matching() -> None:
+    head = _header()
+    head.append("Discord")
+    cells = _row(head, "Mathis", 0, "Avec", "OK").split(",")
+    cells[head.index("Discord")] = "<@123456789012345678>"
+    report = pairing.parse(_sheet(head, ",".join(cells)))
+    assert report.players[0].sheet_id == 123456789012345678
+    text = pairing.render([pairing.TabReport("Yokai", report)], pairing.Resolver())
+    assert "<@123456789012345678>" in text

@@ -64,6 +64,9 @@ class STTBot:
 
         intents = discord.Intents.default()
         intents.message_content = True
+        # Needed to resolve sheet names to members for !pairing. Without it the
+        # roster is empty and names are printed boldly instead of pinged.
+        intents.members = True
 
         self._bot = commands.Bot(
             command_prefix=discord_cfg.command_prefix,
@@ -293,9 +296,30 @@ class STTBot:
                     await ctx.send(f"❌ Could not read the pairing sheet: {exc}")
                     return
 
-            if skipped:
-                logger.debug("Pairing tabs skipped: %s", ", ".join(skipped))
-            await ctx.send(pairing.render(tabs, pairing_cfg.mentions))
+                if skipped:
+                    logger.debug("Pairing tabs skipped: %s", ", ".join(skipped))
+
+                # Resolve sheet names against the live roster, so a rename or
+                # a new player needs no configuration. Failure is survivable:
+                # names simply come out bold instead of pinged.
+                resolver = pairing.Resolver(overrides=pairing_cfg.mentions)
+                if ctx.guild is not None:
+                    try:
+                        roster = list(ctx.guild.members)
+                        if not roster:
+                            roster = [
+                                member
+                                async for member in ctx.guild.fetch_members(limit=None)
+                            ]
+                        resolver.members = pairing.index_members(
+                            (m.id, m.nick, m.global_name, m.name) for m in roster
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not read the guild roster; names stay unpinged."
+                        )
+
+            await ctx.send(pairing.render(tabs, resolver))
             self._note_activity()
 
     def _send_command(self, command: str, payload: object) -> None:

@@ -21,6 +21,13 @@ A player fills the matchup columns in EITHER the Avec row or the Sans row -
 they pick tables or they do not - and must fill all of them. So the test is
 max(avec, sans) == number of faction columns, which keeps working when an
 event has 8 factions instead of 6.
+
+Names become pings in three layers, first hit wins:
+  1. an id written in the sheet itself, if the sheet carries one;
+  2. the live guild roster, matched against the nickname;
+  3. an explicit override, for whatever the roster cannot settle.
+Anything still unresolved is printed in bold instead of pinged. Guessing is
+never done: a wrong ping is public and unfixable.
 """
 
 from __future__ import annotations
@@ -28,10 +35,12 @@ from __future__ import annotations
 import csv
 import io
 import re
+import unicodedata
 import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
+from typing import Iterable, Iterator, Sequence
 from xml.etree import ElementTree
 
 from utils.logging import get_logger
@@ -40,11 +49,97 @@ logger = get_logger(__name__)
 
 _SHEET_ID = re.compile(r"/spreadsheets/d/([A-Za-z0-9_-]{20,})")
 _BARE_ID = re.compile(r"^[A-Za-z0-9_-]{20,}$")
+_MENTION = re.compile(r"<@!?(\d+)>")
 _XLSX_URL = "https://docs.google.com/spreadsheets/d/{sid}/export?format=xlsx"
 _GVIZ_URL = (
     "https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&sheet={name}"
 )
 _NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+
+def normalize(text: str) -> str:
+    """Case- and accent-insensitive, so Lea matches Lea-acute."""
+    folded = unicodedata.normalize("NFKD", text or "")
+    stripped = "".join(c for c in folded if not unicodedata.combining(c))
+    return " ".join(stripped.lower().split())
+
+
+def split_nickname(nick: str) -> tuple[str, str]:
+    """Split a nickname built as pseudo (prenom).
+
+    Returns (pseudo, prenom); the prénom is empty when there is no
+    parenthesised part, which is common on accounts that never set a nick.
+    """
+    nick = (nick or "").strip()
+    match = re.match(r"^(.*?)\s*\((.*?)\)\s*$", nick)
+    if not match:
+        return nick, ""
+    return match.group(1).strip(), match.group(2).strip()
+
+
+@dataclass
+class Member:
+    """One guild member, reduced to the names a sheet might use."""
+
+    id: int
+    display: str
+    aliases: set[str] = field(default_factory=set)
+
+
+def index_members(
+    rows: Iterable[tuple[int, str | None, str | None, str | None]],
+) -> list[Member]:
+    """Build the roster index from (id, nick, global_name, username).
+
+    Every name a member goes by becomes an alias, because the sheet uses the
+    nickname for most players and the pseudo for at least one - Mandal is
+    \"Mandal (Olivier)\", so neither half alone is the rule.
+    """
+    members: list[Member] = []
+    for user_id, nick, global_name, username in rows:
+        aliases: set[str] = set()
+        for candidate in (nick, global_name, username):
+            if not candidate:
+                continue
+            pseudo, prenom = split_nickname(candidate)
+            for part in (pseudo, prenom, candidate):
+                if part.strip():
+                    aliases.add(normalize(part))
+        display = nick or global_name or username or str(user_id)
+        members.append(Member(id=user_id, display=display, aliases=aliases))
+    return members
+
+
+@dataclass
+class Resolver:
+    """Turns a sheet name into a Discord id, or into nothing at all."""
+
+    overrides: dict[str, int] = field(default_factory=dict)
+    members: list[Member] = field(default_factory=list)
+
+    def resolve(self, name: str) -> int | None:
+        raw = name.strip()
+        if raw in self.overrides:
+            return self.overrides[raw]
+
+        key = normalize(raw)
+        if not key:
+            return None
+
+        exact = [m for m in self.members if key in m.aliases]
+        if len(exact) == 1:
+            return exact[0].id
+        if len(exact) > 1:
+            logger.debug("%r matches %d members; not guessing.", raw, len(exact))
+            return None
+
+        # A truncated sheet name (Fab for Fabien) is safe only when it is
+        # unambiguous, and short keys would match far too much to be useful.
+        if len(key) >= 3:
+            partial = [m for m in self.members if any(a.startswith(key) for a in m.aliases)]
+            if len(partial) == 1:
+                return partial[0].id
+        return None
 
 
 @dataclass
@@ -57,6 +152,7 @@ class Player:
     sans: int
     matchups_total: int
     liste: str
+    sheet_id: int | None = None
 
     @property
     def matchups_done(self) -> bool:
@@ -133,8 +229,15 @@ def fetch_tab_csv(sheet_id: str, tab: str, timeout: float = 60.0) -> str:
     return _get(url, timeout).decode("utf-8", errors="replace")
 
 
-def _filled(row: list[str], columns: list[int]) -> int:
+def _filled(row: Sequence[str], columns: Sequence[int]) -> int:
     return sum(1 for i in columns if i < len(row) and row[i].strip())
+
+
+def _sheet_id(cell: str) -> int | None:
+    """Read an id out of a cell, whether bare or written as a mention."""
+    match = _MENTION.search(cell)
+    digits = match.group(1) if match else re.sub(r"\D", "", cell or "")
+    return int(digits) if len(digits) >= 17 else None
 
 
 def parse(csv_text: str) -> Report:
@@ -165,6 +268,16 @@ def parse(csv_text: str) -> Report:
     if liste_column is None or not faction_columns:
         raise ValueError("not a pairing tab: no Liste column or no factions")
 
+    # Optional: a column holding the Discord id removes all name matching.
+    id_column = next(
+        (
+            i
+            for i, h in enumerate(header)
+            if i > 1 and (normalize(h).startswith("discord") or normalize(h) == "id")
+        ),
+        None,
+    )
+
     table_index = next(
         (
             i
@@ -183,6 +296,7 @@ def parse(csv_text: str) -> Report:
         # The Sans row sits directly under the player row, with no name of its own.
         below = rows[index + 1] if index + 1 < len(rows) else []
         sans_row = below if below and not below[0].strip() else None
+        cell = row[id_column] if id_column is not None and len(row) > id_column else ""
         report.players.append(
             Player(
                 name=name,
@@ -191,6 +305,7 @@ def parse(csv_text: str) -> Report:
                 sans=_filled(sans_row, faction_columns) if sans_row else 0,
                 matchups_total=len(faction_columns),
                 liste=(row[liste_column] if len(row) > liste_column else ""),
+                sheet_id=_sheet_id(cell),
             )
         )
     return report
@@ -219,24 +334,24 @@ def collect(sheet_id: str) -> tuple[list[TabReport], list[str]]:
     return found, skipped
 
 
-def _who(player: Player, mentions: dict[str, int]) -> str:
-    """A real ping when mapped: Discord renders it as the nickname."""
-    user_id = mentions.get(player.name.strip())
+def _who(player: Player, resolver: Resolver) -> str:
+    """A real ping when one can be resolved, and a plain bold name otherwise."""
+    user_id = player.sheet_id or resolver.resolve(player.name)
     if user_id:
-        return f"<@{user_id}> ({player.name.strip()})"
+        return f"<@{user_id}>"
     return f"**{player.name.strip()}**"
 
 
 def render(
     tabs: list[TabReport],
-    mentions: dict[str, int],
+    resolver: Resolver,
     limit: int = 1900,
 ) -> str:
     """One section per team, so a ping is always attributable to a matchup.
 
     Skipped tabs are deliberately not listed: a team tab going missing is a
-    thing the group notices from the result itself, so printing the ignore list
-    only adds noise to every well-behaved run. It is logged instead.
+    thing the group notices from the result itself, so printing the ignore
+    list only adds noise to every well-behaved run. It is logged instead.
     """
     if not tabs:
         return "Aucun onglet de pairing trouve dans cette feuille."
@@ -253,10 +368,10 @@ def render(
         for player in missing_matchups:
             filled = max(player.avec, player.sans)
             lines.append(
-                f"- {_who(player, mentions)} : matchups {filled}/{entry.report.matchups_total}"
+                f"- {_who(player, resolver)} : matchups {filled}/{entry.report.matchups_total}"
             )
         for player in missing_liste:
-            lines.append(f"- {_who(player, mentions)} : liste - {player.liste_label}")
+            lines.append(f"- {_who(player, resolver)} : liste - {player.liste_label}")
 
     text = "\n".join(lines)
     if len(text) > limit:
