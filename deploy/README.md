@@ -77,7 +77,7 @@ Write `.env` on the box with:
 DISCORD_TOKEN=...
 OPENROUTER_API_KEY=...
 STT_BACKEND=openrouter
-STT_API_MODEL=mistralai/voxtral-small-24b-2507-stt
+STT_API_MODEL=openai/gpt-transcribe
 CLEANUP_ENABLED=false
 STT_DUMP_DIR=
 ```
