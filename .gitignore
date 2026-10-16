@@ -22,3 +22,7 @@ RECORD_DIR/
 corpus/
 recordings/
 *.wav
+
+# Tool caches: the wrangler cache carries a Cloudflare account id and email.
+.wrangler/
+wrangler.toml.bak
