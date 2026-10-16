@@ -242,10 +242,13 @@ class APIConfig:
     openrouter_key: str = field(
         default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
     )
+    # gpt-transcribe over the voxtral models: on real French wargaming speech
+    # it recovered the proper nouns (Drukhari, Necrons) that voxtral replaced
+    # with common words (Louvre, ecrans), and it was 3x faster for 1.5x the
+    # cost. Clean-speech WER had ranked voxtral first, which is the lesson -
+    # FLEURS cannot see the failure that matters.
     model: str = field(
-        default_factory=lambda: _env_str(
-            "STT_API_MODEL", "mistralai/voxtral-small-24b-2507-stt"
-        )
+        default_factory=lambda: _env_str("STT_API_MODEL", "openai/gpt-transcribe")
     )
     timeout_seconds: float = field(
         default_factory=lambda: _env_float("STT_API_TIMEOUT", 120.0)
