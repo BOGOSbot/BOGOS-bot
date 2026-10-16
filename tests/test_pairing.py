@@ -104,7 +104,7 @@ def test_sheet_id_from_a_link_or_a_bare_id() -> None:
         pairing.sheet_id_from("https://example.com/not-a-sheet")
 
 
-def test_the_summary_sections_by_team_and_pings_only_mapped_players() -> None:
+def test_the_summary_sections_by_team_and_pings_only_resolved_players() -> None:
     head = _header()
     yokai = pairing.parse(_sheet(
         head,
@@ -113,10 +113,10 @@ def test_the_summary_sections_by_team_and_pings_only_mapped_players() -> None:
         _row(head, "Fab", 6, "Avec", ""),
         _row(head, "", 0, "Sans"),
     ))
-    text = pairing.render(
-        [pairing.TabReport("Yokai", yokai)],
-        pairing.Resolver(overrides={"Nathan": 4242}),
+    roster = pairing.Resolver(
+        members=pairing.index_members([(4242, "Ekvar (Nathan)", None, "ekvar")])
     )
+    text = pairing.render([pairing.TabReport("Yokai", yokai)], roster)
     assert "**Yokai**" in text
     assert "<@4242>" in text
     assert "**Fab**" in text
@@ -189,17 +189,17 @@ def test_a_unique_prefix_resolves_and_an_ambiguous_one_does_not() -> None:
     assert two.resolve("Fab") is None
 
 
-def test_an_override_settles_what_the_roster_cannot() -> None:
-    roster = pairing.Resolver(overrides={"Mathis": 99}, members=_roster().members)
-    assert roster.resolve("Mathis") == 99
-
-
-def test_an_id_written_in_the_sheet_beats_name_matching() -> None:
+def test_a_name_the_roster_cannot_settle_is_left_unpinged() -> None:
+    # Mathis has no counterpart in the guild. A bold name is the honest output,
+    # and is preferred over any guess: this project carries no id to fall back on.
+    roster = _roster()
+    assert roster.resolve("Mathis") is None
     head = _header()
-    head.append("Discord")
-    cells = _row(head, "Mathis", 0, "Avec", "OK").split(",")
-    cells[head.index("Discord")] = "<@123456789012345678>"
-    report = pairing.parse(_sheet(head, ",".join(cells)))
-    assert report.players[0].sheet_id == 123456789012345678
-    text = pairing.render([pairing.TabReport("Yokai", report)], pairing.Resolver())
-    assert "<@123456789012345678>" in text
+    report = pairing.parse(_sheet(
+        head,
+        _row(head, "Mathis", 0, "Avec", "OK"),
+        _row(head, "", 0, "Sans"),
+    ))
+    text = pairing.render([pairing.TabReport("Yokai", report)], roster)
+    assert "**Mathis**" in text
+    assert "<@" not in text

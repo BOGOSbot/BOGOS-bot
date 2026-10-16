@@ -302,7 +302,7 @@ class STTBot:
                 # Resolve sheet names against the live roster, so a rename or
                 # a new player needs no configuration. Failure is survivable:
                 # names simply come out bold instead of pinged.
-                resolver = pairing.Resolver(overrides=pairing_cfg.mentions)
+                resolver = pairing.Resolver()
                 if ctx.guild is not None:
                     try:
                         roster = list(ctx.guild.members)

@@ -298,43 +298,20 @@ class TranscriptConfig:
 # ──────────────────────────────────────────────
 # Pairing sheet summary
 # ──────────────────────────────────────────────
-def _parse_mentions(raw: str) -> dict[str, int]:
-    """Parse "Name=123,Other=456" into a name -> Discord id map.
-
-    A sheet name is free text (it even carries a trailing space in places), so
-    this is an explicit map rather than a guess: mismatching a player here would
-    ping the wrong person in front of everyone.
-    """
-    mentions: dict[str, int] = {}
-    for chunk in raw.split(","):
-        chunk = chunk.strip()
-        if not chunk or "=" not in chunk:
-            continue
-        name, _, value = chunk.partition("=")
-        if name.strip().isdigit() and value.strip():
-            name, value = value, name  # tolerate "123=Name" too
-        try:
-            mentions[name.strip()] = int(value.strip())
-        except ValueError:
-            continue
-    return mentions
-
-
 @dataclass(frozen=True)
 class PairingConfig:
-    """The shared pairing sheet, read over its public CSV export.
+    """The shared pairing sheet, read over its public export.
 
     No Google credentials are involved: the sheet is link-readable, so this is a
     plain GET. If it is ever locked down, this becomes the place a service
     account is wired in.
+
+    Note there is no mention map here on purpose. Names are resolved against the
+    live guild roster at command time, so this project carries no Discord ids.
     """
 
     # Fallback used when !pairing is given no link.
     sheet_id: str = field(default_factory=lambda: _env_str("PAIRING_SHEET_ID", ""))
-    # "Mandal=123456789012345678" - unmapped names still appear, without a ping.
-    mentions: dict[str, int] = field(
-        default_factory=lambda: _parse_mentions(_env_str("PAIRING_MENTIONS", ""))
-    )
 
 
 # ──────────────────────────────────────────────

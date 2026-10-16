@@ -49,7 +49,6 @@ logger = get_logger(__name__)
 
 _SHEET_ID = re.compile(r"/spreadsheets/d/([A-Za-z0-9_-]{20,})")
 _BARE_ID = re.compile(r"^[A-Za-z0-9_-]{20,}$")
-_MENTION = re.compile(r"<@!?(\d+)>")
 _XLSX_URL = "https://docs.google.com/spreadsheets/d/{sid}/export?format=xlsx"
 _GVIZ_URL = (
     "https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&sheet={name}"
@@ -112,17 +111,17 @@ def index_members(
 
 @dataclass
 class Resolver:
-    """Turns a sheet name into a Discord id, or into nothing at all."""
+    """Turns a sheet name into a Discord id, or into nothing at all.
 
-    overrides: dict[str, int] = field(default_factory=dict)
+    There is deliberately no way to hand-configure a name-to-id map: this
+    project is meant to be readable and forkable by anyone, and a table of
+    Discord ids is exactly the kind of thing that should not travel with it.
+    """
+
     members: list[Member] = field(default_factory=list)
 
     def resolve(self, name: str) -> int | None:
-        raw = name.strip()
-        if raw in self.overrides:
-            return self.overrides[raw]
-
-        key = normalize(raw)
+        key = normalize(name.strip())
         if not key:
             return None
 
@@ -130,7 +129,7 @@ class Resolver:
         if len(exact) == 1:
             return exact[0].id
         if len(exact) > 1:
-            logger.debug("%r matches %d members; not guessing.", raw, len(exact))
+            logger.debug("%r matches %d members; not guessing.", name, len(exact))
             return None
 
         # A truncated sheet name (Fab for Fabien) is safe only when it is
@@ -152,7 +151,6 @@ class Player:
     sans: int
     matchups_total: int
     liste: str
-    sheet_id: int | None = None
 
     @property
     def matchups_done(self) -> bool:
@@ -233,13 +231,6 @@ def _filled(row: Sequence[str], columns: Sequence[int]) -> int:
     return sum(1 for i in columns if i < len(row) and row[i].strip())
 
 
-def _sheet_id(cell: str) -> int | None:
-    """Read an id out of a cell, whether bare or written as a mention."""
-    match = _MENTION.search(cell)
-    digits = match.group(1) if match else re.sub(r"\D", "", cell or "")
-    return int(digits) if len(digits) >= 17 else None
-
-
 def parse(csv_text: str) -> Report:
     """Parse a pairing tab, or raise if this tab is not one.
 
@@ -268,16 +259,6 @@ def parse(csv_text: str) -> Report:
     if liste_column is None or not faction_columns:
         raise ValueError("not a pairing tab: no Liste column or no factions")
 
-    # Optional: a column holding the Discord id removes all name matching.
-    id_column = next(
-        (
-            i
-            for i, h in enumerate(header)
-            if i > 1 and (normalize(h).startswith("discord") or normalize(h) == "id")
-        ),
-        None,
-    )
-
     table_index = next(
         (
             i
@@ -296,7 +277,6 @@ def parse(csv_text: str) -> Report:
         # The Sans row sits directly under the player row, with no name of its own.
         below = rows[index + 1] if index + 1 < len(rows) else []
         sans_row = below if below and not below[0].strip() else None
-        cell = row[id_column] if id_column is not None and len(row) > id_column else ""
         report.players.append(
             Player(
                 name=name,
@@ -305,7 +285,6 @@ def parse(csv_text: str) -> Report:
                 sans=_filled(sans_row, faction_columns) if sans_row else 0,
                 matchups_total=len(faction_columns),
                 liste=(row[liste_column] if len(row) > liste_column else ""),
-                sheet_id=_sheet_id(cell),
             )
         )
     return report
@@ -336,7 +315,7 @@ def collect(sheet_id: str) -> tuple[list[TabReport], list[str]]:
 
 def _who(player: Player, resolver: Resolver) -> str:
     """A real ping when one can be resolved, and a plain bold name otherwise."""
-    user_id = player.sheet_id or resolver.resolve(player.name)
+    user_id = resolver.resolve(player.name)
     if user_id:
         return f"<@{user_id}>"
     return f"**{player.name.strip()}**"
