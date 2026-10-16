@@ -216,7 +216,6 @@ $recordBtn.FlatAppearance.BorderSize = 0
 $recordBtn.BackColor = $inkSoft
 $recordBtn.ForeColor = $muted
 $recordBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
-$recordBtn.ShowCellToolTips = $true
 $form.Controls.Add($recordBtn)
 
 $folderLbl = New-Object System.Windows.Forms.Label
