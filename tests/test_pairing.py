@@ -203,3 +203,22 @@ def test_a_name_the_roster_cannot_settle_is_left_unpinged() -> None:
     text = pairing.render([pairing.TabReport("Yokai", report)], roster)
     assert "**Mathis**" in text
     assert "<@" not in text
+
+def test_a_full_nickname_in_the_sheet_still_matches() -> None:
+    # The sheet may carry the whole 
+    # nickname rather than one half of it, in whatever spacing.
+    roster = pairing.Resolver(
+        members=pairing.index_members([(1, "Mandal (Olivier)", "Mandal", "mandal")])
+    )
+    for probe in (
+        "Mandal (Olivier)",
+        "Mandal(Olivier)",
+        "Mandal ( Olivier )",
+        "mandal(olivier)",
+    ):
+        assert roster.resolve(probe) == 1, probe
+
+
+def test_normalize_ignores_spacing_around_parentheses() -> None:
+    assert pairing.normalize("Mandal (Olivier)") == pairing.normalize("Mandal(Olivier)")
+    assert pairing.normalize("Mandal (Olivier)") == pairing.normalize("Mandal ( Olivier )")

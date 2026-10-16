@@ -57,10 +57,17 @@ _NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
 
 def normalize(text: str) -> str:
-    """Case- and accent-insensitive, so Lea matches Lea-acute."""
+    """Case-, accent- and spacing-insensitive.
+
+    Accents so "Lea" matches "Léa". Spacing around parentheses so a sheet may
+    write "Mandal (Olivier)", "Mandal(Olivier)" or "Mandal ( Olivier )" and all
+    three resolve to the same member: a sheet is free text, and the whole point
+    is that whoever fills it does not have to guess a format.
+    """
     folded = unicodedata.normalize("NFKD", text or "")
     stripped = "".join(c for c in folded if not unicodedata.combining(c))
-    return " ".join(stripped.lower().split())
+    collapsed = " ".join(stripped.lower().split())
+    return re.sub(r"\s*([()])\s*", r"\1", collapsed)
 
 
 def split_nickname(nick: str) -> tuple[str, str]:
