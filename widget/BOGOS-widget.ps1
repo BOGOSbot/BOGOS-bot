@@ -104,7 +104,8 @@ $form.FormBorderStyle = 'None'
 $form.StartPosition = 'Manual'
 $form.Location = Load-Position
 $form.Size = New-Object System.Drawing.Size(320, 150)
-$form.TopMost = $true
+# Not topmost: the panel should fall behind other windows like anything else.
+$form.TopMost = $false
 $form.ShowInTaskbar = $false
 $form.BackColor = $ink
 
@@ -121,6 +122,15 @@ $title.ForeColor = $paper
 $title.Location = New-Object System.Drawing.Point(36, 16)
 $title.AutoSize = $true
 $form.Controls.Add($title)
+
+$minimise = New-Object System.Windows.Forms.Label
+$minimise.Text = '_'
+$minimise.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$minimise.ForeColor = $muted
+$minimise.Location = New-Object System.Drawing.Point(268, 12)
+$minimise.AutoSize = $true
+$minimise.Cursor = [System.Windows.Forms.Cursors]::Hand
+$form.Controls.Add($minimise)
 
 $close = New-Object System.Windows.Forms.Label
 $close.Text = 'x'
@@ -175,6 +185,7 @@ $refresh = {
         $toggle.FlatAppearance.MouseOverBackColor = $green
     }
     $detail.Text = Get-Detail $proc
+    if ($tray) { $tray.Text = 'BOGOS bot: ' + $status.Text }
 }
 
 $toggle.Add_Click({
@@ -199,6 +210,37 @@ foreach ($c in @($form, $title, $status, $dot)) {
     $c.Add_MouseUp($endDrag)
 }
 
+# No taskbar entry, so minimising must leave a way back. The tray icon is it.
+$show = {
+    $form.Show()
+    $form.WindowState = 'Normal'
+    $form.Activate()
+}
+
+$tray = New-Object System.Windows.Forms.NotifyIcon
+try {
+    $tray.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon("$env:LOCALAPPDATA\Discord\Update.exe")
+} catch {
+    $tray.Icon = [System.Drawing.SystemIcons]::Application
+}
+$tray.Text = 'BOGOS bot'
+$tray.Visible = $true
+$tray.Add_DoubleClick($show)
+
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$miShow = $menu.Items.Add('Show')
+$miShow.Add_Click($show)
+$miStart = $menu.Items.Add('Start')
+$miStart.Add_Click({ Start-Bot; & $refresh })
+$miStop = $menu.Items.Add('Stop')
+$miStop.Add_Click({ Stop-Bot; & $refresh })
+$null = $menu.Items.Add('-')
+$miExit = $menu.Items.Add('Quit')
+$miExit.Add_Click({ Save-Position; $tray.Visible = $false; $form.Close() })
+$tray.ContextMenuStrip = $menu
+
+$minimise.Add_Click({ $form.Hide() })
+
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 1500
 $timer.Add_Tick($refresh)
@@ -207,3 +249,5 @@ $timer.Start()
 & $refresh
 [void]$form.ShowDialog()
 $timer.Stop()
+$tray.Visible = $false
+$tray.Dispose()
