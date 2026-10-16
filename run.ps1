@@ -24,6 +24,15 @@ if ($running.Count -gt 0) {
 }
 
 if ($RecordDir) {
+  # A bare word here is almost always a mistyped argument, not an intent:
+  # 'run.ps1 RECORD_DIR E:\x' binds RECORD_DIR into this position, and the bot
+  # then records other people's voices into a folder named RECORD_DIR inside
+  # the repo, where git can pick them up. Demand a real, rooted path.
+  if (-not [System.IO.Path]::IsPathRooted($RecordDir)) {
+    Write-Host "Refusing -RecordDir '$RecordDir': give a full path, for example:" -ForegroundColor Red
+    Write-Host '    .\run.ps1 -RecordDir E:\recordings'
+    exit 1
+  }
   # Set before python starts: python-dotenv does not override a variable that
   # is already in the environment, so this wins over .env.
   $env:RECORD_DIR = $RecordDir

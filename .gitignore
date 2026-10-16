@@ -16,3 +16,9 @@ venv/
 # Local session transcripts (private; never commit)
 transcripts/
 dumps/
+
+# Session audio: these are other people's voices, never commit them.
+RECORD_DIR/
+corpus/
+recordings/
+*.wav

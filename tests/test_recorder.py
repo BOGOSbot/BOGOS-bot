@@ -18,9 +18,9 @@ def _frames(path) -> int:
 
 def test_one_wav_per_speaker_with_both_chunks_appended(tmp_path) -> None:
     recorder = ChannelRecorder(str(tmp_path))
-    recorder.write(1, "Kael38 (Martial)", b"\x00\x01" * 100)
-    recorder.write(2, "Mandal (Olivier)", b"\x02\x03" * 50)
-    recorder.write(1, "Kael38 (Martial)", b"\x04\x05" * 100)
+    recorder.write(1, "Nova (Alex)", b"\x00\x01" * 100)
+    recorder.write(2, "Zed (Sam)", b"\x02\x03" * 50)
+    recorder.write(1, "Nova (Alex)", b"\x04\x05" * 100)
     recorder.close()
 
     assert len(list(tmp_path.glob("*.wav"))) == 2
@@ -30,19 +30,19 @@ def test_one_wav_per_speaker_with_both_chunks_appended(tmp_path) -> None:
 
 def test_a_session_index_names_the_speakers(tmp_path) -> None:
     recorder = ChannelRecorder(str(tmp_path))
-    recorder.write(1, "Kael38 (Martial)", b"\x00\x00" * 10)
+    recorder.write(1, "Nova (Alex)", b"\x00\x00" * 10)
     recorder.close()
 
     index = list(tmp_path.glob("*__session.json"))
     assert len(index) == 1
     payload = json.loads(index[0].read_text())
-    assert payload["speakers"] == {"1": "Kael38 (Martial)"}
+    assert payload["speakers"] == {"1": "Nova (Alex)"}
     assert payload["sample_rate"] == 16_000
 
 
 def test_a_display_name_is_made_filename_safe(tmp_path) -> None:
     recorder = ChannelRecorder(str(tmp_path))
-    recorder.write(7, "Kael/38 (Martial)*", b"\x00\x00")
+    recorder.write(7, "Nova/38 (Alex)*", b"\x00\x00")
     recorder.close()
 
     name = next(tmp_path.glob("*.wav")).name

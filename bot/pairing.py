@@ -1,4 +1,4 @@
-"""Read a BOGOS pairing workbook and report who has filled what.
+"""Read a pairing workbook and report who has filled what.
 
 One workbook per tournament, one tab per opposing team. The tab label IS the
 team name, so a report is produced per tab.
@@ -60,7 +60,7 @@ def normalize(text: str) -> str:
     """Case-, accent- and spacing-insensitive.
 
     Accents so "Lea" matches "Léa". Spacing around parentheses so a sheet may
-    write "Mandal (Olivier)", "Mandal(Olivier)" or "Mandal ( Olivier )" and all
+    write "Zed (Sam)", "Zed(Sam)" or "Zed ( Sam )" and all
     three resolve to the same member: a sheet is free text, and the whole point
     is that whoever fills it does not have to guess a format.
     """
@@ -98,8 +98,8 @@ def index_members(
     """Build the roster index from (id, nick, global_name, username).
 
     Every name a member goes by becomes an alias, because the sheet uses the
-    nickname for most players and the pseudo for at least one - Mandal is
-    \"Mandal (Olivier)\", so neither half alone is the rule.
+    nickname for most players and the pseudo for at least one - Zed is
+    \"Zed (Sam)\", so neither half alone is the rule.
     """
     members: list[Member] = []
     for user_id, nick, global_name, username in rows:
@@ -200,7 +200,7 @@ class TabReport:
 
 
 def _get(url: str, timeout: float = 60.0) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "BOGOS-bot/1.0"})
+    request = urllib.request.Request(url, headers={"User-Agent": "discord-transcriber/1.0"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read()
 
