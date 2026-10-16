@@ -228,6 +228,10 @@ $folderLbl.AutoSize = $true
 $folderLbl.Cursor = [System.Windows.Forms.Cursors]::Hand
 $form.Controls.Add($folderLbl)
 
+# ToolTip is its own component in WinForms; controls have no ToolTipText at
+# runtime, only the extender adds one at design time.
+$tipProvider = New-Object System.Windows.Forms.ToolTip
+
 $refresh = {
     $proc = Get-BotProcess
     if ($proc) {
@@ -266,8 +270,8 @@ $refresh = {
     $tip = 'Audio on disk: ' + $(if ($rec.enabled) { 'ON' } else { 'OFF' })
     if ($rec.folder) { $tip = $tip + ' under ' + $rec.folder }
     $tip = $tip + '. Applies at the next !transcript session.'
-    $recordBtn.ToolTipText = $tip
-    $folderLbl.ToolTipText = $tip
+    $tipProvider.SetToolTip($recordBtn, $tip)
+    $tipProvider.SetToolTip($folderLbl, $tip)
 }
 
 $recordBtn.Add_Click({
