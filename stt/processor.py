@@ -29,7 +29,7 @@ import numpy as np
 
 import recording
 from config import api_cfg, audio_cfg, process_cfg, stt_cfg, vad_cfg
-from stt import artifacts
+from stt import artifacts, conflicts
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -85,10 +85,17 @@ class STTProcessor:
         self._vad = VADWrapper()
 
         # Only import the chosen backend, so the cloud path never pulls in torch.
+        self._second = None
         if api_cfg.backend == "openrouter":
             from stt.api_transcriber import ApiTranscriber
 
             self._transcriber = ApiTranscriber()
+            # A second reading of the same audio, used only to find conflicts.
+            if api_cfg.second_opinion:
+                try:
+                    self._second = ApiTranscriber(api_cfg.second_opinion)
+                except Exception as exc:
+                    logger.warning("Second opinion unavailable: %s", exc)
         else:
             from stt.transcriber import Transcriber
 
@@ -155,6 +162,45 @@ class STTProcessor:
                 if item is not None:
                     self._put_result(item)
 
+    def _with_second_opinion(
+        self, result: dict, user_id: int, audio: bytes
+    ) -> dict:
+        """Attach the other model's reading, and where the two part company.
+
+        This only ever adds to the result. A failure here must never cost the
+        reader the primary transcript, and an agreement is not reported at all.
+        """
+        if self._second is None:
+            return result
+        try:
+            alt = self._second.transcribe(user_id, audio)
+        except Exception as exc:
+            logger.warning("Second opinion failed: %s", exc)
+            return result
+
+        primary = (result.get("text") or "").strip()
+        other = (alt or {}).get("text", "").strip()
+        if not other or other == primary:
+            return result
+
+        found = conflicts.compare(primary, other)
+        if not found:
+            return result  # agreed, once spelling and digits are ignored
+
+        result["alt_text"] = other
+        result["alt_model"] = self._second.model
+        result["conflicts"] = [
+            {"primary": d.primary, "other": d.other} for d in found
+        ]
+        # Under a quarter of the line in dispute, the models are choosing
+        # between words and the spans are what the reader needs. Above it they
+        # rebuilt the sentence, and only the other reading says anything.
+        share = conflicts.divergence(primary, other)
+        result["divergence"] = round(share, 3)
+        result["conflict_note"] = conflicts.describe(found) if share < 0.25 else ""
+        logger.info("Readings differ in %d span(s): %s", len(found), found[:3])
+        return result
+
     def _transcribe_loop(self) -> None:
         """One worker: pull an utterance, transcribe it, deliver it in order."""
         while True:
@@ -175,6 +221,7 @@ class STTProcessor:
                     )
                     result = None  # Guard 4: a subtitle credit, never speech.
                 if result:
+                    result = self._with_second_opinion(result, user_id, audio)
                     result["seq"] = seq
                     result.setdefault("name", self._names.get(user_id, ""))
                 self._deliver(seq, result)

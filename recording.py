@@ -38,9 +38,6 @@ ROOT = Path(__file__).resolve().parent
 SESSIONS_SUBDIR = "sessions"
 DUMPS_SUBDIR = "dumps"
 
-_CACHE: tuple[int, Choice] | None = None
-
-
 @dataclass(frozen=True)
 class Choice:
     """The four things a caller can ask about, resolved once."""
@@ -62,29 +59,21 @@ def save(enabled: bool, folder: str) -> None:
         json.dumps({"enabled": bool(enabled), "folder": str(folder)}, indent=2),
         encoding="utf-8",
     )
-    reset_cache()
-
-
-def reset_cache() -> None:
-    global _CACHE
-    _CACHE = None
 
 
 def current() -> Choice:
-    """A destination to use right now. Cheap: the file is re-read only on change."""
-    global _CACHE
+    """A destination to use right now, read fresh.
+
+    An earlier version cached on the file's mtime. A stat carries clock-tick
+    granularity, so two writes inside one tick look identical and the cache then
+    serves a stale answer at exactly the moment someone flipped the switch. The
+    file is two keys and the callers are rare, so the cache bought microseconds
+    against a two-second transcription and risked being wrong.
+    """
     path = settings_path()
-    try:
-        stamp = path.stat().st_mtime_ns
-    except OSError:
-        stamp = -1
-
-    if _CACHE is not None and _CACHE[0] == stamp:
-        return _CACHE[1]
-
-    choice = _resolve(path) if stamp >= 0 else _from_environment()
-    _CACHE = (stamp, choice)
-    return choice
+    if not path.exists():
+        return _from_environment()
+    return _resolve(path)
 
 
 def _from_environment() -> Choice:

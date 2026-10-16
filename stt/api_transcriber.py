@@ -39,14 +39,20 @@ def pcm_to_wav_bytes(pcm: bytes) -> bytes:
 class ApiTranscriber:
     """Transcribes one utterance per request through OpenRouter."""
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         if not api_cfg.openrouter_key:
             raise RuntimeError(
                 "STT_BACKEND=openrouter requires OPENROUTER_API_KEY in .env"
             )
         self._key = api_cfg.openrouter_key
-        self._model = api_cfg.model
+        # The second opinion is the same client with another model id, so it
+        # inherits the request shape instead of duplicating it.
+        self._model = model or api_cfg.model
         logger.info("Cloud STT backend ready: %s", self._model)
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     def transcribe(self, user_id: int, audio_bytes: bytes) -> dict[str, Any] | None:
         if len(audio_bytes) < stt_cfg.min_audio_bytes:

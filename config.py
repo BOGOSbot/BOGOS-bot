@@ -250,6 +250,17 @@ class APIConfig:
     model: str = field(
         default_factory=lambda: _env_str("STT_API_MODEL", "openai/gpt-transcribe")
     )
+    # A second model, run only to find where the two readings disagree. The bot
+    # then shows both and the reader decides. No model judges another here: the
+    # failure that matters is fluent ("ecrans" for Necrons, "spiders" for
+    # Speeders), so a judge reading text alone would prefer the wrong reading.
+    # Prices are per second of audio, so this adds spend rather than quality:
+    # gpt is $0.27/hour of speech, voxtral $0.18, both together $0.45. Empty off.
+    second_opinion: str = field(
+        default_factory=lambda: _env_str(
+            "STT_SECOND_OPINION", "mistralai/voxtral-small-24b-2507-stt"
+        )
+    )
     timeout_seconds: float = field(
         default_factory=lambda: _env_float("STT_API_TIMEOUT", 120.0)
     )

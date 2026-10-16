@@ -31,6 +31,12 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _short_model(model: str) -> str:
+    """mistralai/voxtral-small-24b-2507-stt -> voxtral, for a readable label."""
+    tail = (model or "").rsplit("/", 1)[-1]
+    return tail.split("-")[0] or "autre modèle"
+
 # Discord hard-caps messages at 2000 characters; stay under it.
 SAFE_MESSAGE_BUDGET = 1800
 
@@ -391,6 +397,16 @@ class STTBot:
             return  # no active session; the log line is the only trace
 
         line = f"**{name}** : {text}"
+        # Both readings, so the reader judges. No model arbitrates: the wrong
+        # reading is usually the fluent one, which is what a text judge prefers.
+        variant = result.get("alt_text")
+        if variant:
+            label = _short_model(result.get("alt_model", ""))
+            # A few contested words are shown as spans, because the rest of the
+            # line is identical and repeating it wastes the reader's eye. When
+            # the note is empty the whole reading diverged, so show it whole.
+            note = result.get("conflict_note") or variant
+            line += f"\n> *{label} : {note}*"
         self._session_lines.append(line)
         self._session_raw.append((name, text))
         self._pending.append(line)

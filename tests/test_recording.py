@@ -17,9 +17,7 @@ def settings(tmp_path, monkeypatch):
     monkeypatch.setattr(recording, "settings_path", lambda: path)
     monkeypatch.delenv("RECORD_DIR", raising=False)
     monkeypatch.delenv("STT_DUMP_DIR", raising=False)
-    recording.reset_cache()
     yield path
-    recording.reset_cache()
 
 
 def test_without_the_file_the_environment_still_decides(settings, monkeypatch):
@@ -56,7 +54,6 @@ def test_enabled_with_no_folder_is_still_off(settings):
 
 def test_a_corrupt_file_does_not_start_recording(settings):
     settings.write_text("{ not json at all", encoding="utf-8")
-    recording.reset_cache()
     assert recording.current().enabled is False
 
 
