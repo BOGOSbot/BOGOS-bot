@@ -141,8 +141,11 @@ def render(report: Report, mentions: dict[str, int]) -> str:
     """Build the message. Names resolve to a real ping when mapped."""
 
     def who(player: Player) -> str:
+        """A real ping when mapped: Discord renders it as "@Pseudo (Prenom)"."""
         user_id = mentions.get(player.name.strip())
-        return f"<@{user_id}>" if user_id else f"**{player.name.strip()}**"
+        if user_id:
+            return f"<@{user_id}> ({player.name.strip()})"
+        return f"**{player.name.strip()}**"
 
     done = [p for p in report.players if p.done]
     lines = [

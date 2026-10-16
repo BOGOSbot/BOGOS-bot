@@ -84,10 +84,13 @@ def test_the_summary_pings_a_mapped_player_and_plainly_names_the_rest() -> None:
     text = _sheet(head,
         _row(head, "Nathan", 0, "Avec", "OK"),
         _row(head, "", 0, "Sans"),
-        _row(head, "Fab", 6, "Avec", "OK"),
+        # Complete on matchups but missing the list, so it is named but not pinged.
+        _row(head, "Fab", 6, "Avec", ""),
         _row(head, "", 0, "Sans"),
     )
     rendered = pairing.render(pairing.parse(text), {"Nathan": 4242})
-    assert "<@4242>" in rendered
-    assert "Nathan" not in rendered.replace("<@4242>", "")
+    # Discord renders "<@4242>" as the nickname, so the sheet name is appended.
+    assert "<@4242> (Nathan)" in rendered
+    # Unmapped players are still named, just without a ping.
+    assert "**Fab**" in rendered
     assert "Tout est bon." not in rendered
