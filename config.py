@@ -295,23 +295,6 @@ class TranscriptConfig:
     )
 
 
-# ──────────────────────────────────────────────
-# Pairing sheet summary
-# ──────────────────────────────────────────────
-@dataclass(frozen=True)
-class PairingConfig:
-    """The shared pairing sheet, read over its public export.
-
-    No Google credentials are involved: the sheet is link-readable, so this is a
-    plain GET. If it is ever locked down, this becomes the place a service
-    account is wired in.
-
-    Note there is no mention map here on purpose. Names are resolved against the
-    live guild roster at command time, so this project carries no Discord ids.
-    """
-
-    # Fallback used when !pairing is given no link.
-    sheet_id: str = field(default_factory=lambda: _env_str("PAIRING_SHEET_ID", ""))
 
 
 # ──────────────────────────────────────────────
@@ -324,6 +307,5 @@ stt_cfg = STTConfig()
 api_cfg = APIConfig()
 cleanup_cfg = CleanupConfig()
 transcript_cfg = TranscriptConfig()
-pairing_cfg = PairingConfig()
 process_cfg = ProcessConfig()
 log_cfg = LogConfig()

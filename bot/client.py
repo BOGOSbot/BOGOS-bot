@@ -24,7 +24,7 @@ from discord.ext import commands
 from bot import pairing
 from bot.audio_sink import STTAudioSink
 from bot.cleanup import clean_lines, render_diff
-from config import cleanup_cfg, discord_cfg, pairing_cfg, process_cfg, transcript_cfg
+from config import cleanup_cfg, discord_cfg, process_cfg, transcript_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -276,18 +276,18 @@ class STTBot:
         async def cmd_pairing(ctx: commands.Context, link: str = "") -> None:
             """Report every team tab of a pairing workbook, in one message.
 
-            Takes a Sheets link; with none, PAIRING_SHEET_ID is used. One
-            workbook is one tournament, one tab is one opposing team.
+            Takes a Sheets link: one workbook is one tournament, one tab is one
+            opposing team. There is no configured fallback sheet, because there
+            is one workbook per tournament - the link is the input.
             """
-            target = link.strip() or pairing_cfg.sheet_id
-            if not target:
-                await ctx.send("Usage: !pairing <lien google sheets>")
+            if not link.strip():
+                await ctx.send("Commande: !pairing <lien vers une fiche de pairing>")
                 return
 
             async with ctx.typing():
                 try:
                     # urllib blocks; keep it off the event loop.
-                    sheet_id = pairing.sheet_id_from(target)
+                    sheet_id = pairing.sheet_id_from(link.strip())
                     tabs, skipped = await asyncio.to_thread(
                         pairing.collect, sheet_id
                     )
