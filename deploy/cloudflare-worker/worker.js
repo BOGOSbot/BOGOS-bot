@@ -100,7 +100,7 @@ export default {
         importOk = "error: " + err.message;
       }
       return Response.json({
-        service: "discord-transcriber-wake",
+        service: "bogos-bot-wake",
         key_bytes: keyBytes,
         import_ok: importOk,
         box_id_configured: Boolean(env.BOX_ID),

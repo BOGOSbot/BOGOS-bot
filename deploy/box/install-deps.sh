@@ -3,7 +3,7 @@
 # discord.py bundles libopus only for Windows/macOS, so Linux needs it.
 set -e
 export DEBIAN_FRONTEND=noninteractive
-APP="/workspace/home/discord-transcriber"
+APP="/workspace/home/bogos-bot"
 
 sudo apt-get update -qq
 sudo apt-get install -y -qq libopus0 ffmpeg

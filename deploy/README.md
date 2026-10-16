@@ -50,7 +50,7 @@ Keep it a plain box: no `--keep-alive`. Set the init command to start the bot
 on every resume:
 
 ```
-initCommand: sh /workspace/discord-transcriber/deploy/box/start-bot.sh
+initCommand: sh /workspace/bogos-bot/deploy/box/start-bot.sh
 ```
 
 ### 2. Dependencies
@@ -59,7 +59,7 @@ discord.py bundles libopus only for Windows and macOS, so Linux needs it.
 
 ```sh
 apt-get update && apt-get install -y libopus0 ffmpeg
-cd /workspace/discord-transcriber
+cd /workspace/bogos-bot
 python3 -m venv .venv
 ./.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 ./.venv/bin/pip install -r requirements.txt
@@ -122,7 +122,7 @@ These cost time to discover; do not re-derive them.
 
 - **`/workspace` is root-owned.** Creating anything directly under it fails
   with `Permission denied`. `/workspace/home` is the box user's cwd and is
-  writable, so the app lives at `/workspace/home/discord-transcriber`.
+  writable, so the app lives at `/workspace/home/bogos-bot`.
 - **`sudo` works headlessly** for `apt-get` (the box user is a sudoer).
 - **The box is arm64**, and the PyTorch CPU index serves aarch64 wheels, so
   `torch --index-url https://download.pytorch.org/whl/cpu` installs fine.

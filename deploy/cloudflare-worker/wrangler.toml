@@ -1,4 +1,4 @@
-name = "discord-transcriber-wake"
+name = "bogos-bot-wake"
 main = "worker.js"
 compatibility_date = "2026-10-15"
 

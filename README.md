@@ -1,6 +1,6 @@
-# discord-transcriber
+# BOGOS-bot
 
-A Discord bot that transcribes a French voice channel, and reports who has filled their pairing sheet.
+A Discord bot for a Warhammer 40K group. Two jobs so far: it transcribes voice channels, and it reports who has filled their pairing sheet.
 
 Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0131/Discord-Realtime-STT-Bot).
 

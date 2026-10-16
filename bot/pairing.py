@@ -200,7 +200,7 @@ class TabReport:
 
 
 def _get(url: str, timeout: float = 60.0) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": "discord-transcriber/1.0"})
+    request = urllib.request.Request(url, headers={"User-Agent": "bogos-bot/1.0"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read()
 

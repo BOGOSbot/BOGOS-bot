@@ -4,7 +4,7 @@
 # two gateway sessions on one token and one would be dropped.
 set -e
 
-APP="/workspace/home/discord-transcriber"
+APP="/workspace/home/bogos-bot"
 LOG="$APP/bot.log"
 PIDFILE="$APP/bot.pid"
 
