@@ -1,223 +1,95 @@
-# 🎙️ Discord Real-time STT Bot
+# discord-transcriber
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
-![Discord.py](https://img.shields.io/badge/Discord.py-2.0%2B-5865F2?style=for-the-badge&logo=discord&logoColor=white)
-![Faster-Whisper](https://img.shields.io/badge/Faster--Whisper-Large--v3-success?style=for-the-badge)
-![Silero VAD](https://img.shields.io/badge/Silero%20VAD-High%20Accuracy-orange?style=for-the-badge)
+*Transcribes a French voice channel in scheduled batches, and reports who has filled their pairing sheet. Built for a Warhammer 40K group, kept general.*
 
-> **High-performance, low-latency Speech-to-Text for Discord voice channels.**
-> Process-isolated architecture ensures the bot **never** freezes during inference.
+Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0131/Discord-Realtime-STT-Bot) (MIT), substantially reworked. See **Credits** at the bottom.
 
 ---
 
-## ⚡ Key Features
+## What it does
 
-| Feature | Implementation |
+| Command | Effect |
 |---|---|
-| **Multiprocessing Core** | STT runs in an isolated process — bot never freezes |
-| **Anti-aliased Resampling** | `torchaudio` Kaiser-window filter (48 kHz → 16 kHz) |
-| **Ring Buffer** | 320 ms pre-speech context — first syllable is never cut |
-| **Silero VAD** | State-of-the-art voice activity detection |
-| **Faster-Whisper** | CTranslate2 — 4× faster than OpenAI Whisper |
-| **Structured Logging** | Python `logging` with module-level loggers |
-| **Graceful Shutdown** | Signal handlers for clean exit |
-| **Per-User State** | Encapsulated `UserState` dataclass per speaker |
+| `!transcript` | Joins your voice channel and posts the transcript back as it goes |
+| `!stop` | Finishes what is queued, posts it, and leaves |
+| `!pairing <google sheets link>` | Reports, per team tab of a tournament workbook, who still owes matchups or an army list |
+
+Not real time, deliberately. Audio is segmented by Silero VAD, queued, and transcribed by a worker pool; an ordered emitter re-sequences the results and posts them in batches. A slow model delays the transcript but never blocks the audio path or drops speech.
 
 ---
 
-## 🛠️ Architecture
-
-```mermaid
-graph TD
-    subgraph "Main Process — Discord Bot"
-        A[Discord Gateway] -->|Opus Audio| B["AudioSink<br/>(bot/audio_sink.py)"]
-        B -->|PCM 48kHz Stereo| C["Resampler<br/>(audio/resampler.py)"]
-        C -->|PCM 16kHz Mono| D[IPC Audio Queue]
-        H[IPC Result Queue] -->|JSON| I["ResultHandler<br/>(bot/client.py)"]
-    end
-
-    subgraph "STT Process — Isolated"
-        D --> E["UserStateManager<br/>(stt/user_state.py)"]
-        E -->|32ms Frames| F["Silero VAD<br/>(stt/vad.py)"]
-        F -->|Speech Segments| G["Faster-Whisper<br/>(stt/transcriber.py)"]
-        G -->|Text| H
-    end
-```
-
----
-
-## 📁 Project Structure
-
-```
-Discord-Realtime-STT-Bot/
-├── main.py                 # Entry point (graceful shutdown)
-├── config.py               # Grouped configuration (dataclasses)
-├── bot/
-│   ├── client.py           # Bot setup, commands, result handler
-│   └── audio_sink.py       # AudioSink + resampling bridge
-├── audio/
-│   ├── resampler.py        # torchaudio anti-aliased resampling
-│   └── ring_buffer.py      # Generic ring buffer
-├── stt/
-│   ├── processor.py        # STT process main loop
-│   ├── vad.py              # Silero VAD wrapper
-│   ├── transcriber.py      # Faster-Whisper wrapper
-│   └── user_state.py       # Per-user state dataclass + manager
-├── utils/
-│   └── logging.py          # Structured logging config
-├── deploy/
-│   └── systemd/            # Ubuntu systemd service example
-├── requirements.txt
-├── .env.example            # Environment template
-├── .gitignore
-└── README.md
-```
-
----
-
-## 📦 Installation
-
-### Prerequisites (Ubuntu)
--   **Python 3.10+**
--   **FFmpeg** and **Opus** runtime libraries
--   **NVIDIA GPU** is recommended for low latency, but CPU fallback is supported
+## Quick start
 
 ```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip git rsync ffmpeg libopus0 build-essential
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt      # Windows: .venv\Scripts\pip
+cp .env.example .env                            # then set DISCORD_TOKEN
 ```
 
-### 1. Clone & Install
-```bash
-git clone https://github.com/your-repo/discord-stt-bot.git
-cd discord-stt-bot
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-> *Note: `torch` + `faster-whisper` may exceed 2 GB total.*
+On Windows there is a launcher: `./run.ps1`, and `./run.ps1 -RecordDir E:\recordings` to also capture the session audio for corpus building.
 
-### 2. Configuration
-Create a `.env` file from the checked-in template:
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-At minimum, set:
-
-```env
-DISCORD_TOKEN=your_super_secret_token_here
-```
-
-For CPU-only Ubuntu servers, start with:
-
-```env
-STT_DEVICE=cpu
-STT_COMPUTE_TYPE=int8
-STT_MODEL_ID=base
-```
-
-For CUDA deployments, install the PyTorch build that matches your driver/CUDA runtime before installing the rest of the requirements. See the official PyTorch install selector for the correct index URL.
-
-### 3. Discord Developer Portal
-- Enable the **Message Content Intent** for the bot.
-- Invite the bot with permissions to read/send messages and connect/speak in voice channels.
-
-### 4. Run
-```bash
-source .venv/bin/activate
-python main.py
-```
+The invite needs **both** the `bot` and `applications.commands` scopes, plus the **Message Content** intent enabled in the Developer Portal — prefix commands read message text, and without it the bot simply never hears you.
 
 ---
 
-## ⚙️ Configuration (`.env`)
+## Configuration
 
-Runtime settings are loaded from environment variables, usually via `.env`.
+Everything lives in `.env`; `.env.example` documents the lot. The ones that matter most:
 
-| Group | Setting | Default | Description |
-|:---|:---|:---|:---|
-| **Discord** | `DISCORD_TOKEN` | required | Bot token |
-| | `COMMAND_PREFIX` | `!` | Prefix command trigger |
-| **STT** | `STT_MODEL_ID` | `deepdml/faster-whisper-large-v3-turbo-ct2` | HuggingFace model ID |
-| | `STT_DEVICE` | `cuda` | Use `cpu` if no GPU |
-| | `STT_COMPUTE_TYPE` | `float16` | Use `int8` for CPU |
-| | `STT_LANGUAGE` | `ko` | Transcription language |
-| | `STT_BEAM_SIZE` | `1` | Lower = faster, higher = more accurate |
-| **Process** | `AUDIO_QUEUE_MAXSIZE` | `512` | Backpressure limit for incoming audio |
-| | `SPEECH_FLUSH_TIMEOUT_SECONDS` | `2.0` | Flush final speech if Discord stops sending frames |
-| | `USER_TIMEOUT_SECONDS` | `60` | Inactive user cleanup |
-| **Audio** | `input_sample_rate` | `48000` | Discord Opus decoded rate |
-| | `output_sample_rate` | `16000` | Whisper input rate |
+| Key | Why |
+|---|---|
+| `STT_BACKEND` | `openrouter` (cloud, current) or `local` (faster-whisper) |
+| `STT_API_MODEL` | `openai/gpt-transcribe` — see the model note below |
+| `VAD_MIN_SILENCE_MS` | **600**, not Silero's 100 default: 100 ms cuts at every inter-word pause and shreds the transcript into fragments |
+| `IDLE_EXIT_MINUTES` | Exit after this long idle, so an auto-pausing host can sleep. `0` on a PC or an always-on VPS |
+| `RECORD_DIR` | Record every speaker's audio for corpus building. Off by default — it captures other people's voices |
 
 ---
 
-## 🧭 Ubuntu systemd Deployment
+## What the measurements taught us
 
-The repository includes an example unit at `deploy/systemd/discord-stt-bot.service.example`.
+This is the part worth reading, because most of it contradicts what the obvious choices would have been.
 
-Example layout:
+**Pick the model on your own audio, not on a benchmark.** Forty clean FLEURS utterances ranked `voxtral-small-24b` first at 1.4% WER against `gpt-transcribe` at 2.9%. On real domain speech it inverted: voxtral wrote *Louvre* for **Drukhari** and *écrans* for **Nécrons** — swapping the proper nouns that carry the meaning for common French words that fit its language model — while gpt-transcribe recovered both, and ran 3× faster. FLEURS contains no proper nouns, so it could not see the failure that mattered. The benchmark measured the wrong thing.
+
+**Segmentation beats model choice.** VAD defaults of 100 ms silence cut at every inter-word pause: 13 fragments over 28.6 s. At 600 ms the same audio gave 4 sentences over 13.7 s, word-perfect. Token cost unchanged.
+
+**Longer context hurts.** On the same audio, one long request scored 2.8% WER, twenty short ones 1.9% — at identical cost.
+
+**Confidence cannot detect hallucination.** The worst hallucination in the set — *"Sous-titrage ST 501"* on 1.9 s of near silence — scored the model's **highest** log probability, with individual words at p=0.997 and `no_speech_prob` 0.000. It is confidently wrong. What catches these is a **list of memorised subtitle credits**, because the phrase was never heard in the first place.
+
+### The guards, and why each exists
+
+| Guard | Trigger |
+|---|---|
+| 0 | Segment under 0.5 s — with VAD padding that is under 100 ms of anything, a click or a breath |
+| 1 | Below a −60 dBFS floor: models answer silence with fluent invention |
+| 2 | Loudness normalisation, so quiet speakers are not penalised |
+| 3 | Words per second — fabrications recite training data at absurd rates |
+| 4 | Memorised artifact list (`stt/artifacts.py`), validated on a real recording |
+
+Guard 1 is deliberately **untuned**. The 77 recorded utterances run from −96.6 to −40 dBFS in a smooth continuum with no gap to put a boundary in, so no threshold can be justified without labelled data. Tightening it would be a guess wearing a number.
+
+---
+
+## Project structure
+
+```
+audio/      resampling (streaming windowed-sinc, one instance per speaker)
+bot/        Discord client, audio sink, recorder, pairing reader
+stt/        VAD, worker pool, transcriber backends, guards
+tests/      pytest — the guards, the parser and the recorder
+deploy/     notes for a Linux host, including what did not work
+```
+
+## Tests
 
 ```bash
-sudo useradd --system --create-home --home-dir /opt/discord-stt-bot discord-stt
-sudo rsync -a --exclude .git ./ /opt/discord-stt-bot/
-sudo chown -R discord-stt:discord-stt /opt/discord-stt-bot
-sudo cp /opt/discord-stt-bot/.env.example /etc/discord-stt-bot.env
-sudo nano /etc/discord-stt-bot.env
-sudo chmod 600 /etc/discord-stt-bot.env
-sudo chown root:root /etc/discord-stt-bot.env
-sudo cp /opt/discord-stt-bot/deploy/systemd/discord-stt-bot.service.example /etc/systemd/system/discord-stt-bot.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now discord-stt-bot
+.venv/bin/python -m pytest -q
 ```
 
-Check logs:
+## Credits
 
-```bash
-journalctl -u discord-stt-bot -f
-```
+Built on [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0131/Discord-Realtime-STT-Bot), which is MIT-licensed and provides the process-isolated skeleton, the VAD pipeline and the original resampler. This fork adds cloud STT, batched output, the guard chain, the pairing reader and the session recorder.
 
-If using an NVIDIA GPU, make sure the `discord-stt` user can access the GPU devices and that the installed `torch` wheel matches the host driver/CUDA runtime.
-
----
-
-## 🖥️ Usage
-
-1.  **Summon**: `!join` in any text channel
-2.  **Speak**: Talk — the bot listens to everyone simultaneously
-3.  **Dismiss**: `!leave` to disconnect
-4.  **Stop**: `Ctrl+C` for graceful shutdown
-
----
-
-## 🧩 Troubleshooting
-
-**Q: The bot joins but doesn't transcribe.**
-> Check console logs. Ensure Silero VAD and Whisper model downloaded successfully.
-
-**Q: It's too slow!**
-> Set `device = "cuda"` in `config.py`. Running `large-v3` on CPU is not recommended.
-
-**Q: CUDA out of memory?**
-> Switch to a smaller model (`base`, `small`) or use `compute_type = "int8"`.
-
-**Q: I see "Audio queue full" warnings.**
-> STT inference is slower than the incoming voice stream. Use a smaller model, GPU acceleration, or increase `AUDIO_QUEUE_MAXSIZE` if the host has enough memory.
-
-**Q: The service exits right after startup.**
-> Check `DISCORD_TOKEN`, Discord privileged intents, native voice dependencies, and model download/network access in `journalctl -u discord-stt-bot -e`.
-
----
-
-## 📜 License
-
-MIT License — free to fork, modify, and use.
-
----
-
-<div align="center">
-  <sub>Built with ❤️ for the Open Source Community.</sub>
-</div>
+MIT — see [LICENSE](LICENSE).
