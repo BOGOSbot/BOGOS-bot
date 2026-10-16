@@ -296,6 +296,48 @@ class TranscriptConfig:
 
 
 # ──────────────────────────────────────────────
+# Pairing sheet summary
+# ──────────────────────────────────────────────
+def _parse_mentions(raw: str) -> dict[str, int]:
+    """Parse "Name=123,Other=456" into a name -> Discord id map.
+
+    A sheet name is free text (it even carries a trailing space in places), so
+    this is an explicit map rather than a guess: mismatching a player here would
+    ping the wrong person in front of everyone.
+    """
+    mentions: dict[str, int] = {}
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        name, _, value = chunk.partition("=")
+        if name.strip().isdigit() and value.strip():
+            name, value = value, name  # tolerate "123=Name" too
+        try:
+            mentions[name.strip()] = int(value.strip())
+        except ValueError:
+            continue
+    return mentions
+
+
+@dataclass(frozen=True)
+class PairingConfig:
+    """The shared pairing sheet, read over its public CSV export.
+
+    No Google credentials are involved: the sheet is link-readable, so this is a
+    plain GET. If it is ever locked down, this becomes the place a service
+    account is wired in.
+    """
+
+    sheet_id: str = field(default_factory=lambda: _env_str("PAIRING_SHEET_ID", ""))
+    gid: str = field(default_factory=lambda: _env_str("PAIRING_GID", "0"))
+    # "Mandal=123456789012345678" - unmapped names still appear, without a ping.
+    mentions: dict[str, int] = field(
+        default_factory=lambda: _parse_mentions(_env_str("PAIRING_MENTIONS", ""))
+    )
+
+
+# ──────────────────────────────────────────────
 # Singleton instances (import these directly)
 # ──────────────────────────────────────────────
 discord_cfg = DiscordConfig()
@@ -305,5 +347,6 @@ stt_cfg = STTConfig()
 api_cfg = APIConfig()
 cleanup_cfg = CleanupConfig()
 transcript_cfg = TranscriptConfig()
+pairing_cfg = PairingConfig()
 process_cfg = ProcessConfig()
 log_cfg = LogConfig()

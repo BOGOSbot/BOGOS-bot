@@ -21,9 +21,10 @@ import discord
 import discord.ext.voice_recv
 from discord.ext import commands
 
+from bot import pairing
 from bot.audio_sink import STTAudioSink
 from bot.cleanup import clean_lines, render_diff
-from config import cleanup_cfg, discord_cfg, process_cfg, transcript_cfg
+from config import cleanup_cfg, discord_cfg, pairing_cfg, process_cfg, transcript_cfg
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -266,6 +267,28 @@ class STTBot:
             await self._post_corrections()
             await self._close_session()
             await ctx.send("Left the voice channel.")
+            self._note_activity()
+
+        @bot.command(name="pairing", aliases=["table", "sheet"])
+        async def cmd_pairing(ctx: commands.Context) -> None:
+            """Post who has filled their matchups, and who still owes a list."""
+            if not pairing_cfg.sheet_id:
+                await ctx.send("❌ PAIRING_SHEET_ID is not set.")
+                return
+
+            async with ctx.typing():
+                try:
+                    # urllib blocks; keep it off the event loop.
+                    csv_text = await asyncio.to_thread(
+                        pairing.fetch_csv, pairing_cfg.sheet_id, pairing_cfg.gid
+                    )
+                    report = pairing.parse(csv_text)
+                except Exception as exc:
+                    logger.exception("Could not read the pairing sheet.")
+                    await ctx.send(f"❌ Could not read the pairing sheet: {exc}")
+                    return
+
+            await ctx.send(pairing.render(report, pairing_cfg.mentions))
             self._note_activity()
 
     def _send_command(self, command: str, payload: object) -> None:
