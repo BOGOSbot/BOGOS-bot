@@ -104,3 +104,20 @@ def test_nothing_in_common_is_still_shown_not_cut():
 def test_no_verdict_drops_a_reading():
     """A rule that guesses which side is wrong costs words nobody sees."""
     assert {v.value for v in conflicts.Verdict} == {"same", "differ"}
+
+
+def test_a_repeated_phrase_is_not_a_conflict():
+    """gpt said it twice, voxtral once. Nothing for a reader to judge."""
+    a = (
+        "Ouais, c'est pas encore, c'est pas encore parfait quoi. "
+        "Surtout quand on parle de"
+    )
+    b = "Ouais... C'est pas encore parfait quoi. Surtout quand on parle de..."
+    assert conflicts.classify(a, b) is conflicts.Verdict.SAME
+    assert "(∅" not in conflicts.render(a, b)
+
+
+def test_render_does_not_put_identical_words_across_a_bracket():
+    """The old output read as an error: (c'est pas encore, | ∅) c'est pas encore."""
+    line = conflicts.render("il dit bonjour bonjour salut", "il dit bonjour salut")
+    assert line == "il dit bonjour salut"

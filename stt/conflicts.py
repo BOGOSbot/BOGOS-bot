@@ -111,6 +111,30 @@ def _key(token: str) -> str:
     return "".join(ch for ch in flat if not unicodedata.combining(ch))
 
 
+def _repeats(keys: list[str], start: int, end: int) -> bool:
+    """True when keys[start:end] is a phrase stuttered from beside it.
+
+    The repeated unit can be shorter than the span: "Oh, oh, oh," is "oh,"
+    three times, and the run that follows it may be one token long. Checking
+    only same-length neighbours missed that, so this looks at every period that
+    divides the span.
+    """
+    span = keys[start:end]
+    size = len(span)
+    if not size:
+        return False
+    for period in range(1, size + 1):
+        if size % period:
+            continue
+        after = keys[end:end + period]
+        if len(after) == period and span == after * (size // period):
+            return True
+        before = keys[max(0, start - period):start]
+        if len(before) == period and span == before * (size // period):
+            return True
+    return False
+
+
 def render(primary: str, other: str) -> str:
     """One line, with each disagreement bracketed at the word that moved.
 
@@ -127,9 +151,9 @@ def render(primary: str, other: str) -> str:
     if not left or not right:
         return primary or other
 
-    matcher = difflib.SequenceMatcher(
-        None, [_key(t) for t in left], [_key(t) for t in right], autojunk=False
-    )
+    left_keys = [_key(t) for t in left]
+    right_keys = [_key(t) for t in right]
+    matcher = difflib.SequenceMatcher(None, left_keys, right_keys, autojunk=False)
 
     out: list[str] = []
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -138,6 +162,14 @@ def render(primary: str, other: str) -> str:
             continue
 
         primary_span, other_span = left[i1:i2], right[j1:j2]
+
+        # One model repeating a phrase the other said once is a stutter, not a
+        # different reading. Bracketing it puts identical words on both sides of
+        # the bracket, which reads as a mistake. Show the phrase once.
+        if tag == "delete" and _repeats(left_keys, i1, i2):
+            continue
+        if tag == "insert" and _repeats(right_keys, j1, j2):
+            continue
 
         # Standalone punctuation arrives as its own token ("truc !" against
         # "truc"). Neither side carries a word here, so there is nothing to
@@ -206,9 +238,33 @@ def _is_content(token: str) -> bool:
     return len(token) > 1 and token not in _FUNCTION
 
 
+def _only_repeats(primary: str, other: str) -> bool:
+    """True when every difference is one side saying a phrase twice.
+
+    "c'est pas encore, c'est pas encore parfait" against "c'est pas encore
+    parfait" differs only by a repeat. A reader gains nothing from judging it,
+    and marking it produces identical words either side of the bracket.
+    """
+    left, right = [_key(t) for t in primary.split()], [_key(t) for t in other.split()]
+    if left == right:
+        return False
+    matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "delete" and _repeats(left, i1, i2):
+            continue
+        if tag == "insert" and _repeats(right, j1, j2):
+            continue
+        return False  # a replaced word is a real difference
+    return True
+
+
 def classify(primary: str, other: str) -> Verdict:
     """SAME only when nothing but grammar and filler moved."""
     if not compare(primary, other):
+        return Verdict.SAME
+    if _only_repeats(primary, other):
         return Verdict.SAME
     left, right = normalise_tokens(primary), normalise_tokens(other)
     moved = [t for t in set(left) ^ set(right) if t]
