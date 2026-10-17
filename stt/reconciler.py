@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from typing import Callable
 
 from utils.logging import get_logger
 
@@ -89,11 +90,12 @@ def _payload(model: str, numbered: list[str]) -> dict:
 # whole session budget.
 BATCH = 8
 
-# The endpoint is intermittent: a small batch answers in ten seconds, and the
-# same size occasionally stalls past a minute. A per-call timeout alone lets one
-# stalled batch cost the whole transcript, because the post waits for every
-# batch to finish, so the pass has a deadline as well and gives up on the rest.
-BUDGET = 300.0
+# The endpoint is free and intermittent: a small batch answers in ten seconds,
+# and the same size occasionally stalls past a minute. A retry is therefore
+# normal operation, not a failure path, and a batch is retried until it answers.
+# The cost of waiting is a delay the channel is told about; the cost of giving up
+# would be a transcript nobody reviewed.
+BACKOFF = 3.0
 
 
 def reconcile(
@@ -102,32 +104,33 @@ def reconcile(
     api_key: str,
     model: str,
     timeout: float = 75.0,
-    budget: float = BUDGET,
+    on_retry: Callable[[str, int], None] | None = None,
 ) -> Reconciled:
-    """Settle the disputed lines, in batches small enough to answer."""
-    deadline = time.monotonic() + budget
+    """Settle the disputed lines, in batches small enough to answer.
+
+    A batch is retried until it answers. on_retry is called before each wait, so
+    the caller can tell the channel that the transcript is delayed rather than
+    lost; it receives the reason and the attempt number.
+    """
     merged: dict[int, str] = {}
-    left_over = 0
     for start in range(0, len(numbered), BATCH):
         part = numbered[start:start + BATCH]
-        remaining = deadline - time.monotonic()
-        if remaining < 15:
-            left_over = len(numbered) - start
-            break
-        result = _once(part, base_url, api_key, model, min(timeout, remaining))
-        if result.error and deadline - time.monotonic() > 20:
-            result = _once(
-                part, base_url, api_key, model, min(timeout, deadline - time.monotonic())
-            )
-        merged.update(result.replacements)
-        if result.error:
+        attempt = 0
+        while True:
+            attempt += 1
+            result = _once(part, base_url, api_key, model, timeout)
+            if not result.error:
+                merged.update(result.replacements)
+                break
             logger.warning(
-                "Gave up on %d line(s) at %d: %s", len(part), start, result.error
+                "Batch at %d failed (attempt %d): %s", start, attempt, result.error
             )
-    if left_over:
-        logger.warning(
-            "Reconciliation budget spent; %d line(s) stay disputed.", left_over
-        )
+            if on_retry is not None:
+                try:
+                    on_retry(result.error, attempt)
+                except Exception as exc:  # a notice must never kill the retry
+                    logger.warning("Retry notice failed: %s", exc)
+            time.sleep(BACKOFF)
     return Reconciled(replacements=merged)
 
 

@@ -628,12 +628,44 @@ class STTBot:
         mechanical = [f"**{entry['name']}** : {entry['body']}" for entry in entries]
         path = self._save_session(entries, mechanical, stamp)
 
-        lines = await asyncio.to_thread(self._reconcile, entries)
+        lines = await asyncio.to_thread(
+            self._reconcile, entries, self._retry_notice(channel)
+        )
         if lines != mechanical:
             path = self._save_session(entries, lines, stamp) or path
         await self._post_transcript(channel, path, lines, entries)
 
-    def _reconcile(self, entries: list[dict]) -> list[str]:
+    def _retry_notice(self, channel):
+        """A one-off message when the endpoint makes the transcript late.
+
+        The pass retries until it answers, so nothing is lost, but silence while
+        it does looks like a hang. The channel is told once, on the first failed
+        attempt, that the wait is expected.
+        """
+        state = {"announced": False}
+
+        def notice(reason: str, attempt: int) -> None:
+            if state["announced"]:
+                return
+            state["announced"] = True
+
+            async def announce() -> None:
+                try:
+                    await channel.send(
+                        "The transcription review is late: the model timed out "
+                        "and I am retrying. The file is on disk and will be "
+                        "posted when the review answers."
+                    )
+                except discord.HTTPException as exc:
+                    logger.error("Could not post the retry notice: %s", exc)
+
+            # Called from the worker thread, so the coroutine is handed back to
+            # the loop the bot is running on.
+            asyncio.run_coroutine_threadsafe(announce(), self.loop)
+
+        return notice
+
+    def _reconcile(self, entries: list[dict], notice=None) -> list[str]:
         """Settle the disputed lines, or leave them standing.
 
         Blocking, so it runs off the event loop. Any failure leaves the
@@ -660,6 +692,7 @@ class STTBot:
                     reconcile_cfg.api_key,
                     reconcile_cfg.model,
                     reconcile_cfg.timeout_seconds,
+                    notice,
                 )
                 replacements = settled.replacements
                 if settled.error:
