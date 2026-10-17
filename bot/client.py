@@ -622,18 +622,25 @@ class STTBot:
             return
 
         stamp = (started or datetime.now(timezone.utc)).astimezone()
-        # Write the mechanical transcript first. The reconciler is a network
-        # call that can stall, and the file must not depend on it: if the model
-        # never answers, the session is already on disk and the brackets stand.
-        mechanical = [f"**{entry['name']}** : {entry['body']}" for entry in entries]
-        path = self._save_session(entries, mechanical, stamp)
+        # The mechanical transcript is posted at once. The reconciler is a
+        # network call on an endpoint that stalls regularly, and waiting for it
+        # would leave the channel empty for minutes; the reader would rather
+        # have the session now and the polish later.
+        mechanical: list[str] = []
+        for entry in entries:
+            entry["final"] = f"**{entry['name']}** : {entry['body']}"
+            mechanical.append(entry["final"])
+        first = self._save_session(entries, mechanical, stamp)
+        await self._post_transcript(channel, first, mechanical, entries, reviewed=False)
 
         lines = await asyncio.to_thread(
             self._reconcile, entries, self._retry_notice(channel)
         )
         if lines != mechanical:
-            path = self._save_session(entries, lines, stamp) or path
-        await self._post_transcript(channel, path, lines, entries)
+            second = self._save_session(entries, lines, stamp, reviewed=True)
+            await self._post_transcript(
+                channel, second, lines, entries, reviewed=True
+            )
 
     def _retry_notice(self, channel):
         """A one-off message when the endpoint makes the transcript late.
@@ -717,7 +724,13 @@ class STTBot:
         return lines
 
     async def _post_transcript(
-        self, channel, path: Path | None, lines: list[str], entries: list[dict]
+        self,
+        channel,
+        path: Path | None,
+        lines: list[str],
+        entries: list[dict],
+        *,
+        reviewed: bool,
     ) -> None:
         """Post the session as a dated file rather than a wall of text.
 
@@ -727,9 +740,15 @@ class STTBot:
         line saying what is in it.
         """
         disputed = sum(1 for entry in entries if "⚠" in (entry.get("final") or ""))
-        summary = [f"**Transcription** · {len(entries)} utterances"]
-        if disputed:
-            summary.append(f"{disputed} disputed ⚠")
+        if reviewed:
+            summary = [f"**Transcription (reviewed)** · {len(entries)} utterances"]
+            if disputed:
+                summary.append(f"{disputed} disputed ⚠")
+        else:
+            summary = [
+                f"**Transcription** · {len(entries)} utterances",
+                "the review is running, a reviewed file will follow",
+            ]
         if path is None:
             # Writing the file failed, so post the text rather than nothing.
             await self._post_lines(channel, lines)
@@ -764,13 +783,20 @@ class STTBot:
                 logger.error("Could not post the transcript: %s", exc)
 
     def _save_session(
-        self, entries: list[dict], lines: list[str], stamp: datetime
+        self,
+        entries: list[dict],
+        lines: list[str],
+        stamp: datetime,
+        *,
+        reviewed: bool = False,
     ) -> Path | None:
         """Keep the reconciled text and the two readings it came from."""
         try:
             out_dir = Path(transcript_cfg.save_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
-            stem = f"transcription-{stamp:%Y-%m-%d-%H%M}"
+            stem = f"transcription-{stamp:%Y-%m-%d-%H%M}" + (
+                "-reviewed" if reviewed else ""
+            )
             (out_dir / f"{stem}.md").write_text(
                 f"# Transcription — {stamp:%Y-%m-%d %H:%M}\n\n"
                 + "\n".join(lines)

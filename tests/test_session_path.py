@@ -90,3 +90,29 @@ def test_the_speaker_name_survives_the_reconciler(monkeypatch):
     lines = _bot()._reconcile(_entries())
     assert lines[1] == "**Nathan** : battle shock"
     assert lines[0] == "**Nathan** : il fait quatre"
+
+
+
+def test_the_reviewed_file_does_not_overwrite_the_mechanical_one(monkeypatch, tmp_path):
+    """Both are posted, so both have to exist; only the reviewed one is final."""
+    monkeypatch.setattr(
+        "bot.client.transcript_cfg", types.SimpleNamespace(save_dir=str(tmp_path))
+    )
+    bot = _bot()
+    stamp = datetime(2026, 10, 17, 18, 31, tzinfo=timezone.utc)
+    bot._save_session(_entries(), ["**Nathan** : raw"], stamp)
+    bot._save_session(_entries(), ["**Nathan** : reviewed"], stamp, reviewed=True)
+
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == [
+        "transcription-2026-10-17-1831-reviewed.json",
+        "transcription-2026-10-17-1831-reviewed.md",
+        "transcription-2026-10-17-1831.json",
+        "transcription-2026-10-17-1831.md",
+    ]
+    assert "reviewed" in (
+        tmp_path / "transcription-2026-10-17-1831-reviewed.md"
+    ).read_text(encoding="utf-8")
+    assert "raw" in (
+        tmp_path / "transcription-2026-10-17-1831.md"
+    ).read_text(encoding="utf-8")
