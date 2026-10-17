@@ -42,3 +42,19 @@ def test_memorised_credits_are_caught(text: str) -> None:
 )
 def test_real_speech_is_left_alone(text: str) -> None:
     assert not artifacts.is_artifact(text)
+
+
+def test_encyclopedia_fabrications_are_recognised():
+    """Measured: 14 of these in one 15-minute French session."""
+    from stt import artifacts
+    invented = (
+        "Le 1er janvier 2010, le gouvernement de la province de l'Ontario a "
+        "annoncé qu'il allait fermer le centre de détention de Toronto."
+    )
+    assert artifacts.is_artifact(invented)
+    assert artifacts.is_artifact("Le 1er janvier 1992, le président de la République, François Mitterrand, a inauguré le musée d'Orsay.")
+
+
+def test_real_speech_is_not_an_artifact():
+    for text in ("J'ai remis mes points.", "Carré neuf.", "Allez !", "Merci."):
+        assert not artifacts.is_artifact(text)

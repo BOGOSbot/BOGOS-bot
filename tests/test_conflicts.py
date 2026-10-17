@@ -68,3 +68,28 @@ def test_describe_caps_a_long_list():
     )
     assert len(found) == 2
     assert "+1 autre(s)" in conflicts.describe(found, cap=1)
+
+
+def test_a_stylistic_difference_is_not_a_conflict():
+    """Two of the pairs a reader labelled false positives: keep either."""
+    a = conflicts.classify("Je pense pas te le reprendre.", "Je ne pense pas te le reprendre.")
+    b = conflicts.classify("Hmm, peut-être un peu la merde, ça.", "Hum, peut-être un peu la merde, ça.")
+    assert a is conflicts.Verdict.SAME
+    assert b is conflicts.Verdict.SAME
+
+
+def test_a_content_word_moving_is_a_conflict():
+    assert conflicts.classify("les nécrons c'est bien", "les écrans c'est bien") is conflicts.Verdict.DIFFER
+
+
+def test_nothing_in_common_is_still_shown_not_cut():
+    """One of these is real speech, and only a reader can tell which."""
+    a = conflicts.classify("J'ai remis mes points.", "Jean-Rémy Dupont.")
+    b = conflicts.classify("Carré neuf.", "Jeune homme.")
+    assert a is conflicts.Verdict.DIFFER
+    assert b is conflicts.Verdict.DIFFER
+
+
+def test_no_verdict_drops_a_reading():
+    """A rule that guesses which side is wrong costs words nobody sees."""
+    assert {v.value for v in conflicts.Verdict} == {"same", "differ"}

@@ -183,10 +183,22 @@ class STTProcessor:
         if not other or other == primary:
             return result
 
-        found = conflicts.compare(primary, other)
-        if not found:
-            return result  # agreed, once spelling and digits are ignored
+        # The guards were built for the primary reading, but a second model
+        # fabricates just as readily. Voxtral produced 14 memorised encyclopedia
+        # sentences in one 15-minute session, every one of them on a clip under
+        # two seconds, which is exactly what _plausible rejects by rate alone.
+        # Neither guard is complete, so this only ever adds a reading.
+        if not self._plausible({"text": other}, audio):
+            logger.warning("Second opinion rejected by rate: %s", other[:70])
+            return result
+        if artifacts.is_artifact(other):
+            logger.warning("Second opinion was a memorised artifact: %s", other[:70])
+            return result
 
+        if conflicts.classify(primary, other) is conflicts.Verdict.SAME:
+            return result  # wording moved, meaning did not: one reading is enough
+
+        found = conflicts.compare(primary, other)
         result["alt_text"] = other
         result["alt_model"] = self._second.model
         result["conflicts"] = [

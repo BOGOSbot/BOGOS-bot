@@ -39,7 +39,7 @@ On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the sess
 - `!pairing` reads the sheet over its public link export and sends no credentials. If the sheet is private, it will not work.
 - Both the session recorder and the per-utterance dumps write other people's voices to disk. The widget's Record switch turns both off and picks the folder; that switch wins over `.env`. Ask people before you turn it on.
 - `CLEANUP_ENABLED` is off. A text pass cannot tell a misheard word from a real one, so it has nothing useful to do.
-- The second opinion (`STT_SECOND_OPINION`) runs every utterance through a second model and prints its reading when the two disagree. It adds spend, not certainty: $0.18/hour on top of gpt's $0.27. On six real utterances the two disagreed somewhere in all six, so treat it as a prompt to listen, not as a verdict.
+- The second opinion (`STT_SECOND_OPINION`) runs every utterance through a second model and prints its reading when the two disagree on meaning. Differences confined to grammar and filler are dropped, and the second reading faces the same rate and artifact guards as the first. It adds spend, not certainty: $0.18/hour on top of gpt's $0.27.
 - Only run on Windows so far, and only against French speech.
 
 ## Tests

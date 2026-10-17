@@ -33,6 +33,21 @@ PHRASES: tuple[str, ...] = (
     "thank you for watching",
     "abonnez-vous",
     "abonnez vous",
+    # Memorised encyclopedia prose. Measured: 14 utterances in one 15-minute
+    # French session, nearly all opening with the same Wikipedia formula, on
+    # clips of 0.2 to 1.6 seconds. The plausibility guard rejects these by rate
+    # alone; this list is the belt to that pair of braces.
+    "1er janvier",
+    "le gouvernement a annonce",
+    "le gouvernement de la",
+    "guerre froide",
+    "musee d'orsay",
+    "francois mitterrand",
+    "prix hugo",
+    "jacques chirac",
+    "union sovietique",
+    "mvp de la saison",
+    "parc national",
 )
 
 

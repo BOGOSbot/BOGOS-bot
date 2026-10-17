@@ -18,6 +18,7 @@ import difflib
 import re
 import unicodedata
 from dataclasses import dataclass
+from enum import Enum
 
 # Number words to digits, so "trois" and "3" compare equal. Un/une map too:
 # they are also the articles, but the mapping is symmetric so it can only hide
@@ -100,3 +101,58 @@ def describe(differences: list[Difference], cap: int = 6) -> str:
     if hidden > 0:
         parts.append("+%d autre(s)" % hidden)
     return " ; ".join(parts)
+
+
+# Two models agreeing is not the same as them saying the same thing, but only
+# two outcomes are safe to decide automatically:
+#
+#   SAME    wording differs, meaning does not ("je ne pense pas" / "je pense
+#           pas"). Both readings say the same thing, so printing one loses
+#           nothing and saves the reader an eye movement.
+#   DIFFER  a real disagreement, and the reader decides. This includes pairs
+#           that share no content at all.
+#
+# There is deliberately no third outcome that drops a pair. An earlier
+# version added one for "nothing in common" and cut those lines, which was
+# wrong: "J'ai remis mes points" against "Jean-Remy Dupont" shares nothing, and
+# one of those is real speech. Only a reader can tell that apart from a
+# fabrication, and a rule that guesses costs the reader words they never get
+# to see. Fabrications are caught separately, by the guards built for them.
+
+# Function words, fillers and contractions. A difference confined to these is
+# style, not content: they carry grammar and hesitation, not meaning.
+_FUNCTION = frozenset(
+    """
+    le la les l un une des du de d au aux a et ou ni mais car donc or que qu qui
+    quoi je j tu te toi il elle ils elles on nous vous me m se s ce c cet cette
+    ces ne n pas plus moins tres trop peu y en dans sur sous par pour avec sans
+    est sont etait ete etre avoir ai as ont avait avais suis es sommes etes
+    mon ma mes ton ta tes son sa ses notre nos votre vos leur leurs
+    si comme quand hmm hum heu euh bah ben bon ok ouais oui non mm mhm hein
+    ah oh eh bien voila ca ici la bas
+    """
+.split()
+)
+
+
+class Verdict(str, Enum):
+    """What to do with a pair of readings."""
+
+    SAME = "same"
+    DIFFER = "differ"
+
+
+def _is_content(token: str) -> bool:
+    """A word that carries meaning, not grammar."""
+    return len(token) > 1 and token not in _FUNCTION
+
+
+def classify(primary: str, other: str) -> Verdict:
+    """SAME only when nothing but grammar and filler moved."""
+    if not compare(primary, other):
+        return Verdict.SAME
+    left, right = normalise_tokens(primary), normalise_tokens(other)
+    moved = [t for t in set(left) ^ set(right) if t]
+    if moved and all(not _is_content(t) for t in moved):
+        return Verdict.SAME
+    return Verdict.DIFFER
