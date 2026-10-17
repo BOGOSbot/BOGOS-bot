@@ -55,19 +55,30 @@ def test_divergence_separates_word_choice_from_a_rebuilt_sentence():
     assert large > 0.25
 
 
-def test_describe_lists_the_spans_a_reader_judges():
-    found = conflicts.compare("il est pistol", "il est pistolet")
-    assert conflicts.describe(found) == "pistol → pistolet"
+def test_render_marks_the_words_that_moved():
+    """The reader sees which word is contested, in place, once."""
+    assert conflicts.render("il est pistol", "il est pistolet") == "il est (pistol | pistolet)"
 
 
-def test_describe_caps_a_long_list():
-    """Two separate edits, so the cap actually applies."""
-    found = conflicts.compare(
-        "un chien deux chats trois loups quatre renards",
-        "un X deux chats trois Y quatre renards",
+def test_render_of_the_hard_one_from_the_session():
+    line = conflicts.render(
+        "Ça me va. Ça se rate. Sophie, tu fais douze, sale bâtard.",
+        "Ça me va. Ça se rate. Sauf si tu fais 12. Sale bâtard.",
     )
-    assert len(found) == 2
-    assert "+1 autre(s)" in conflicts.describe(found, cap=1)
+    assert line == "Ça me va. Ça se rate. (Sophie, | Sauf si) tu fais (douze | 12), sale bâtard."
+
+
+def test_render_treats_punctuation_as_no_difference():
+    """A comma against a full stop is not something to judge."""
+    assert conflicts.render("on passe à cinq, ok", "on passe à 5. ok") == "on passe à (cinq | 5), ok"
+
+
+def test_render_marks_an_inserted_word():
+    assert conflicts.render("Je pense pas", "Je ne pense pas") == "Je (∅ | ne) pense pas"
+
+
+def test_render_leaves_an_agreement_alone():
+    assert conflicts.render("hop il revient à deux", "hop il revient à deux") == "hop il revient à deux"
 
 
 def test_a_stylistic_difference_is_not_a_conflict():

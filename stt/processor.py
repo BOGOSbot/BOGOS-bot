@@ -204,12 +204,11 @@ class STTProcessor:
         result["conflicts"] = [
             {"primary": d.primary, "other": d.other} for d in found
         ]
-        # Under a quarter of the line in dispute, the models are choosing
-        # between words and the spans are what the reader needs. Above it they
-        # rebuilt the sentence, and only the other reading says anything.
         share = conflicts.divergence(primary, other)
         result["divergence"] = round(share, 3)
-        result["conflict_note"] = conflicts.describe(found) if share < 0.25 else ""
+        # One line, with each disagreement bracketed at the word that moved, so
+        # the reader sees exactly what is contested and nothing else twice.
+        result["conflict_note"] = conflicts.render(primary, other)
         logger.info("Readings differ in %d span(s): %s", len(found), found[:3])
         return result
 

@@ -1,15 +1,16 @@
 """Where two models read the same audio differently.
 
 The bot runs a second model only to find these. When the two agree the reader
-sees one line; when they differ the reader sees both and decides. No model
-judges another here, deliberately: the failure that matters is fluent (voxtral
-wrote "ecrans" for Necrons, "spiders" for Speeders), so a judge reading text
-alone would prefer the wrong reading. The decision needs an ear.
+sees one line; when they disagree the reader sees one line with each contested
+word bracketed, and decides. No model judges another here, deliberately: the
+failure that matters is fluent (voxtral wrote "ecrans" for Necrons, "spiders"
+for Speeders), so a judge reading text alone would prefer the wrong reading.
+The decision needs an ear.
 
-Comparison runs on NORMALISED tokens, not raw text. On 181 s of real speech the
-raw difference was 55 spans; about 20 of those were digits against words
-("trois" vs "3") and one was "6+" against "six". Those are formatting, not
-conflict, and leaving them in would bury the ones that matter.
+Comparison runs on NORMALISED tokens for deciding whether there is a conflict at
+all, so that mechanical differences do not bury the real ones. Rendering then
+returns to the original words, because a reader judging a line needs to see what
+was actually written, not a normalised shadow of it.
 """
 
 from __future__ import annotations
@@ -20,9 +21,10 @@ import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
-# Number words to digits, so "trois" and "3" compare equal. Un/une map too:
-# they are also the articles, but the mapping is symmetric so it can only hide
-# a difference where the two models already agree on the sound.
+# Number words to digits, so "trois" and "3" compare equal when deciding whether
+# two readings conflict. Un/une map too: they are also the articles, but the
+# mapping is symmetric so it can only hide a difference where the two models
+# already agree on the sound.
 _NUMBERS = {
     "zero": "0", "un": "1", "une": "1", "deux": "2", "trois": "3", "quatre": "4",
     "cinq": "5", "six": "6", "sept": "7", "huit": "8", "neuf": "9", "dix": "10",
@@ -32,6 +34,7 @@ _NUMBERS = {
 }
 
 _NON_WORD = re.compile(r"[^\w]", re.UNICODE)
+_PUNCT = "\"'()[]{}<>,.;:!?«»…-–—/\\"
 
 
 @dataclass(frozen=True)
@@ -78,8 +81,7 @@ def divergence(primary: str, other: str) -> float:
 
     Measured on six real table-talk utterances: the ones where the models are
     choosing between words sit at 7-13%, and the ones where they rebuild the
-    sentence sit at 28-29%. A span count cannot tell those apart, because a
-    long line can carry many small edits and a short one a single fatal word.
+    sentence sit at 28-29%.
     """
     left, right = normalise_tokens(primary), normalise_tokens(other)
     matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
@@ -91,16 +93,74 @@ def divergence(primary: str, other: str) -> float:
     return changed / max(len(left), len(right), 1)
 
 
-def describe(differences: list[Difference], cap: int = 6) -> str:
-    """The contested spans, for a reader deciding between two words."""
-    if not differences:
-        return ""
-    shown = differences[:cap]
-    parts = ["%s → %s" % (d.primary or "rien", d.other or "rien") for d in shown]
-    hidden = len(differences) - len(shown)
-    if hidden > 0:
-        parts.append("+%d autre(s)" % hidden)
-    return " ; ".join(parts)
+# Words are compared with punctuation stripped when rendering: two readings that
+# differ only in how they punctuate are the same reading, and marking it would
+# bury the words that actually moved. Spelling is kept, so "douze" and "12" both
+# show, because a reader may well care which one was said.
+def _bare(token: str) -> str:
+    return token.strip(_PUNCT)
+
+
+def _trail(token: str) -> str:
+    return token[len(token.rstrip(_PUNCT)):]
+
+
+def _key(token: str) -> str:
+    """Alignment key: case, accents and punctuation gone, spelling kept."""
+    flat = unicodedata.normalize("NFKD", _bare(token).lower())
+    return "".join(ch for ch in flat if not unicodedata.combining(ch))
+
+
+def render(primary: str, other: str) -> str:
+    """One line, with each disagreement bracketed at the word that moved.
+
+    "Ca me va. Sophie, tu fais douze, sale batard." against "Ca me va. Sauf si
+    tu fais 12. Sale batard." becomes
+
+        Ca me va. (Sophie, | Sauf si) tu fais (douze | 12), sale batard.
+
+    Punctuation that both sides carry and differ only in kind moves outside the
+    brackets once, so a comma against a full stop never becomes a difference.
+    A word only one side heard is marked against an empty side.
+    """
+    left, right = primary.split(), other.split()
+    if not left or not right:
+        return primary or other
+
+    matcher = difflib.SequenceMatcher(
+        None, [_key(t) for t in left], [_key(t) for t in right], autojunk=False
+    )
+
+    out: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            out.append(" ".join(left[i1:i2]))
+            continue
+
+        primary_span, other_span = left[i1:i2], right[j1:j2]
+
+        # Standalone punctuation arrives as its own token ("truc !" against
+        # "truc"). Neither side carries a word here, so there is nothing to
+        # judge; keep the primary's mark and move on.
+        if not any(_key(t) for t in primary_span) and not any(
+            _key(t) for t in other_span
+        ):
+            if primary_span:
+                out.append(" ".join(primary_span))
+            continue
+        trail_p = _trail(primary_span[-1]) if primary_span else ""
+        trail_o = _trail(other_span[-1]) if other_span else ""
+
+        if trail_p and trail_o:
+            bare_p = " ".join(t for t in (_bare(x) for x in primary_span) if t)
+            bare_o = " ".join(t for t in (_bare(x) for x in other_span) if t)
+            out.append("(%s | %s)%s" % (bare_p or "∅", bare_o or "∅", trail_p))
+        else:
+            out.append(
+                "(%s | %s)"
+                % (" ".join(primary_span) or "∅", " ".join(other_span) or "∅")
+            )
+    return " ".join(out)
 
 
 # Two models agreeing is not the same as them saying the same thing, but only
@@ -112,12 +172,12 @@ def describe(differences: list[Difference], cap: int = 6) -> str:
 #   DIFFER  a real disagreement, and the reader decides. This includes pairs
 #           that share no content at all.
 #
-# There is deliberately no third outcome that drops a pair. An earlier
-# version added one for "nothing in common" and cut those lines, which was
-# wrong: "J'ai remis mes points" against "Jean-Remy Dupont" shares nothing, and
-# one of those is real speech. Only a reader can tell that apart from a
-# fabrication, and a rule that guesses costs the reader words they never get
-# to see. Fabrications are caught separately, by the guards built for them.
+# There is deliberately no third outcome that drops a pair. An earlier version
+# added one for "nothing in common" and cut those lines, which was wrong:
+# "J'ai remis mes points" against "Jean-Remy Dupont" shares nothing, and one of
+# those is real speech. Only a reader can tell that apart from a fabrication,
+# and a rule that guesses costs the reader words they never see. Fabrications
+# are caught separately, by the rate and artifact guards built for them.
 
 # Function words, fillers and contractions. A difference confined to these is
 # style, not content: they carry grammar and hesitation, not meaning.
@@ -130,8 +190,7 @@ _FUNCTION = frozenset(
     mon ma mes ton ta tes son sa ses notre nos votre vos leur leurs
     si comme quand hmm hum heu euh bah ben bon ok ouais oui non mm mhm hein
     ah oh eh bien voila ca ici la bas
-    """
-.split()
+    """.split()
 )
 
 
