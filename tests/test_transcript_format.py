@@ -42,8 +42,8 @@ def test_a_blockquote_never_starts_a_body():
     assert "> *" not in src
 
 
-def test_the_header_counts_the_brackets_the_file_actually_has(tmp_path, monkeypatch):
-    """It once said 0 while the file held 44: the count tested for the marker."""
+def test_the_file_has_no_counts_line(tmp_path, monkeypatch):
+    """Redundant with the brackets, and wrong for a while besides."""
     monkeypatch.setattr(
         "bot.client.transcript_cfg", types.SimpleNamespace(save_dir=str(tmp_path))
     )
@@ -59,5 +59,7 @@ def test_the_header_counts_the_brackets_the_file_actually_has(tmp_path, monkeypa
         datetime(2026, 10, 17, 21, 11, tzinfo=timezone.utc),
     )
     body = (tmp_path / "transcription-2026-10-17-2111.md").read_text(encoding="utf-8")
-    assert "3 utterances · 2 with a dispute" in body
+    assert "utterances" not in body
+    assert "with a dispute" not in body
+    assert body.startswith("# Transcription")
     assert body.count("**") == 6

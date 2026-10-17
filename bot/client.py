@@ -839,16 +839,13 @@ class STTBot:
             stem = f"transcription-{stamp:%Y-%m-%d-%H%M}" + (
                 "-reviewed" if reviewed else ""
             )
-            # Blank lines between entries. Discord renders markdown, and
-            # consecutive lines with nothing between them collapse into one
-            # paragraph, so the whole session arrived as a single run of text.
-            # Counted from the brackets themselves. This once tested for the
-            # removed marker, so both files claimed no dispute while one held
-            # forty-four of them.
-            disputed = _disputed_count(entries)
+            # No counts line. The brackets are visible in the body, so the
+            # tally told the reader nothing they could not see, and it was
+            # wrong for a while besides. Blank lines between entries are what
+            # matter here: Discord renders markdown, and consecutive lines
+            # with nothing between them collapse into a single paragraph.
             (out_dir / f"{stem}.md").write_text(
                 f"# Transcription \u2014 {stamp:%Y-%m-%d %H:%M}\n\n"
-                f"{len(entries)} utterances \u00b7 {disputed} with a dispute.\n\n"
                 "A bracket marks where the two models heard different words, "
                 "and \u2205 means one heard nothing there.\n\n"
                 + "\n\n".join(lines)
