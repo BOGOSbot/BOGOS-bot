@@ -108,7 +108,11 @@ def _trail(token: str) -> str:
 def _key(token: str) -> str:
     """Alignment key: case, accents and punctuation gone, spelling kept."""
     flat = unicodedata.normalize("NFKD", _bare(token).lower())
-    return "".join(ch for ch in flat if not unicodedata.combining(ch))
+    flat = "".join(ch for ch in flat if not unicodedata.combining(ch))
+    # Inner punctuation too. A clitic keeps its apostrophe in the middle, so
+    # stripping only the edges left "C'est" and "C'’est" looking like different
+    # words when the only difference is which apostrophe the model emitted.
+    return _NON_WORD.sub("", flat)
 
 
 def _repeats(keys: list[str], start: int, end: int) -> bool:
@@ -177,6 +181,15 @@ def render(primary: str, other: str) -> str:
         if tag == "delete" and _repeats(left_keys, i1, i2):
             continue
         if tag == "insert" and _repeats(right_keys, j1, j2):
+            continue
+
+        # Same letters, split differently: "A2" against "à 2", "tues" against
+        # "tu es". The reader hears one word either way, so the primary's
+        # spelling stands and nothing is bracketed.
+        if "".join(_key(t) for t in primary_span) == "".join(
+            _key(t) for t in other_span
+        ) and "".join(_key(t) for t in primary_span):
+            out.append(" ".join(primary_span))
             continue
 
         # Nothing but grammar and filler moved here. "Ah" against silence is a

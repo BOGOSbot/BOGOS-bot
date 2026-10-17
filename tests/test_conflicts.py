@@ -143,3 +143,24 @@ def test_the_bracket_lands_on_the_content_word_not_the_hesitation():
     line = conflicts.render(a, b)
     assert "(Nécrozor | Necrozard)" in line
     assert "(ouais" not in line
+
+
+def test_an_apostrophe_is_not_a_word_difference():
+    """Straight against curly is typography, not speech."""
+    assert conflicts.render("C'est pas blast", "C’est pas blast") == "C'est pas blast"
+    assert conflicts.classify("C'est bon", "C’est bon") is conflicts.Verdict.SAME
+
+
+def test_a_hyphen_is_not_a_word_difference_either():
+    assert conflicts.render("un giga-chad", "un gigachad") == "un giga-chad"
+
+
+def test_a_word_split_two_ways_is_not_a_conflict():
+    """A2 against à 2, tues against tu es: the same word with a space in it."""
+    assert conflicts.render("le véhicule A2 arrive", "le véhicule à 2 arrive") == "le véhicule A2 arrive"
+    assert conflicts.render("ce que tues ce point", "ce que tu es ce point") == "ce que tues ce point"
+
+
+def test_a_real_word_order_change_is_still_shown():
+    """Reordered words are not the same word split differently."""
+    assert "(" in conflicts.render("le chat", "chat le")
