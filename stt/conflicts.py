@@ -36,11 +36,11 @@ _NUMBERS = {
 _NON_WORD = re.compile(r"[^\w]", re.UNICODE)
 _PUNCT = "\"'()[]{}<>,.;:!?«»…-–—/\\"
 
-# Every bracket is a place the two models disagree, and the marker sits right
-# after it rather than at the start of the line: the reader meets the dispute and
-# the flag together, and a line number of them can be scanned without the eye
-# jumping to the margin.
-MARK = "⚠"
+# No marker after a bracket. The reconciler rewrites the lines it settles, so
+# any character added here is just text to it: it moved the flag onto lines that
+# held no bracket and dropped it from lines that did. A bracket is evidence
+# enough, and it cannot be moved by a model that does not understand it.
+MARK = ""
 
 
 @dataclass(frozen=True)

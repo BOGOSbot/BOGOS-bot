@@ -57,7 +57,7 @@ def test_divergence_separates_word_choice_from_a_rebuilt_sentence():
 
 def test_render_marks_the_words_that_moved():
     """The reader sees which word is contested, in place, once."""
-    assert conflicts.render("il est pistolet", "il est canon") == "il est (pistolet | canon)⚠"
+    assert conflicts.render("il est pistolet", "il est canon") == "il est (pistolet | canon)"
 
 
 def test_render_of_the_hard_one_from_the_session():
@@ -65,7 +65,7 @@ def test_render_of_the_hard_one_from_the_session():
         "Ça me va. Ça se rate. Sophie, tu fais douze, sale bâtard.",
         "Ça me va. Ça se rate. Sauf si tu fais 12. Sale bâtard.",
     )
-    assert line == "Ça me va. Ça se rate. (Sophie, | Sauf si)⚠ tu fais douze, sale bâtard."
+    assert line == "Ça me va. Ça se rate. (Sophie, | Sauf si) tu fais douze, sale bâtard."
 
 
 def test_render_treats_punctuation_as_no_difference():
@@ -74,7 +74,7 @@ def test_render_treats_punctuation_as_no_difference():
 
 
 def test_render_marks_an_inserted_content_word():
-    assert conflicts.render("Je pense", "Je pense vraiment") == "Je pense (∅ | vraiment)⚠"
+    assert conflicts.render("Je pense", "Je pense vraiment") == "Je pense (∅ | vraiment)"
 
 
 def test_render_does_not_bracket_a_grammar_word():
@@ -214,5 +214,4 @@ def test_an_elision_does_not_swallow_a_real_deletion():
 def test_every_bracket_carries_the_flag():
     """The reader meets the dispute and the flag in the same glance."""
     line = conflicts.render("il est pistolet", "il est canon")
-    assert "(pistolet | canon)⚠" in line
-    assert not line.startswith("⚠")
+    assert "(pistolet | canon)" in line

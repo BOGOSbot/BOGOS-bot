@@ -22,10 +22,10 @@ def _entries():
         {"name": "Nathan", "primary": "il fait quatre", "second": "il fait 4",
          "body": "il fait quatre", "line": "**Nathan** : il fait quatre"},
         {"name": "Nathan", "primary": "battle shop", "second": "battle shock",
-         "body": "battle (shop | shock)⚠", "line": "**Nathan** : battle (shop | shock)⚠"},
+         "body": "battle (shop | shock)", "line": "**Nathan** : battle (shop | shock)"},
         {"name": "Thomas", "primary": "", "second": "Le 1er janvier 2010 …",
-         "body": "(∅ | Le 1er janvier 2010 …)⚠",
-         "line": "**Thomas** : (∅ | Le 1er janvier 2010 …)⚠"},
+         "body": "(∅ | Le 1er janvier 2010 …)",
+         "line": "**Thomas** : (∅ | Le 1er janvier 2010 …)"},
     ]
 
 
@@ -37,7 +37,7 @@ def test_a_failed_model_leaves_the_brackets_standing(monkeypatch):
     )
     lines = _bot()._reconcile(_entries())
     assert lines[0] == "**Nathan** : il fait quatre"
-    assert lines[1] == "**Nathan** : battle (shop | shock)⚠"
+    assert lines[1] == "**Nathan** : battle (shop | shock)"
     assert len(lines) == 3
 
 
@@ -45,7 +45,7 @@ def test_the_model_settles_a_line_and_drops_a_fabrication(monkeypatch):
     monkeypatch.setattr(
         "bot.client.reconcile_cfg",
         types.SimpleNamespace(
-            enabled=True, base_url="u", api_key="k", model="m",
+            enabled=True, base_url="u", api_key="k", models=["m"],
             timeout_seconds=1, reasoning_effort="low",
         ),
     )
@@ -83,7 +83,7 @@ def test_the_speaker_name_survives_the_reconciler(monkeypatch):
     monkeypatch.setattr(
         "bot.client.reconcile_cfg",
         types.SimpleNamespace(
-            enabled=True, base_url="u", api_key="k", model="m",
+            enabled=True, base_url="u", api_key="k", models=["m"],
             timeout_seconds=1, reasoning_effort="low",
         ),
     )
@@ -122,3 +122,24 @@ def test_the_reviewed_file_does_not_overwrite_the_mechanical_one(monkeypatch, tm
     assert "raw" in (
         tmp_path / "transcription-2026-10-17-1831.md"
     ).read_text(encoding="utf-8")
+
+
+def test_a_marker_the_model_echoes_back_is_stripped(monkeypatch):
+    """One arrived on lines that held no bracket; nothing decorative survives."""
+    monkeypatch.setattr(
+        "bot.client.reconcile_cfg",
+        types.SimpleNamespace(
+            enabled=True, base_url="u", api_key="k", models=["m"],
+            timeout_seconds=1, reasoning_effort="low",
+        ),
+    )
+    monkeypatch.setattr(
+        "stt.reconciler.reconcile",
+        lambda *a, **k: types.SimpleNamespace(
+            replacements={1: "il fait quatre \u26a0", 2: "battle shock \u26a0 extra"},
+            error="",
+        ),
+    )
+    lines = _bot()._reconcile(_entries())
+    assert "\u26a0" not in "".join(lines)
+    assert lines[0] == "**Nathan** : il fait quatre"

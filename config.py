@@ -10,6 +10,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_list(name: str, default: str) -> list[str]:
+    """A comma-separated list, empty entries dropped."""
+    raw = os.getenv(name, default)
+    return [part.strip() for part in raw.split(",") if part.strip()] or [
+        part.strip() for part in default.split(",") if part.strip()
+    ]
+
+
 def _env_str(name: str, default: str) -> str:
     value = os.getenv(name)
     if value is None or value.strip() == "":
@@ -316,20 +324,27 @@ class ReconcileConfig:
     enabled: bool = field(
         default_factory=lambda: _env_bool("RECONCILE_ENABLED", True)
     )
-    # DeepSeek's own API. The free SenseNova route answered "429 Server is
-    # busy" often enough that a ten-minute session waited twenty minutes for a
-    # review, and an unreviewed transcript that arrives is worth more than a
-    # reviewed one that does not.
-    model: str = field(
-        default_factory=lambda: _env_str("RECONCILE_MODEL", "deepseek-flash")
+    # Deployed on SenseNova's free tier, tried in order so a busy model can
+    # fall through to the next. On 2026-10-17 the endpoint lists
+    # sensenova-6.7-flash-lite but answers every chat call for it with 404, so
+    # the fallback is ready rather than useful until that changes. Point
+    # RECONCILE_BASE_URL at api.deepseek.com/v1 with RECONCILE_MODELS=
+    # deepseek-flash and RECONCILE_API_KEY set for the paid route used in
+    # testing: measured on the same 18 disputed lines, SenseNova answered none
+    # of them in eleven minutes and DeepSeek settled all 18 in 84 seconds.
+    models: list[str] = field(
+        default_factory=lambda: _env_list(
+            "RECONCILE_MODELS", "sensenova-6.8-flash-lite"
+        )
     )
     base_url: str = field(
         default_factory=lambda: _env_str(
-            "RECONCILE_BASE_URL", "https://api.deepseek.com/v1"
+            "RECONCILE_BASE_URL", "https://token.sensenova.ai/v1"
         )
     )
     api_key: str = field(
         default_factory=lambda: _env_str("RECONCILE_API_KEY", "")
+        or _env_str("SENSENOVA_API_KEY", "")
     )
     # Choosing between two given readings is judgement, not a hard problem, so
     # the cheapest reasoning is the right amount of it.

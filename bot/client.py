@@ -14,6 +14,8 @@ import asyncio
 import json
 import queue
 import re
+
+from stt import conflicts
 import time
 from datetime import datetime, timezone
 from multiprocessing import Queue as MPQueue
@@ -39,6 +41,15 @@ from config import (
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# A bracket is the only mark of a dispute, so the count is read from the
+# brackets rather than from a flag the reconciler could move.
+_BRACKET = re.compile(r"\([^()]* \| [^()]*\)")
+
+
+def _disputed_count(entries: list[dict]) -> int:
+    return sum(1 for e in entries if _BRACKET.search(e.get("final") or ""))
 
 
 STATUS_FILE = Path(__file__).resolve().parents[1] / "status.json"
@@ -431,17 +442,15 @@ class STTBot:
         if self._transcript_channel is None:
             return  # no active session; the log line is the only trace
 
-        # Both readings, so the reader judges. No model arbitrates: the wrong
-        # reading is usually the fluent one, which is what a text judge prefers.
-        body = text
+        # One line per utterance: the primary reading with each contested word
+        # bracketed in place. The second model's whole reading is deliberately
+        # not appended. A line beginning "> " is a Discord blockquote, and a
+        # blockquote swallows every line after it until a blank one, so the
+        # transcript arrived as one flat block with its tail in italics.
         variant = result.get("alt_text")
-        if variant:
-            label = _short_model(result.get("alt_model", ""))
-            # A few contested words are shown as spans, because the rest of the
-            # line is identical and repeating it wastes the reader's eye. When
-            # the note is empty the whole reading diverged, so show it whole.
-            note = result.get("conflict_note") or variant
-            body = f"{body}\n> *{label} : {note}*"
+        body = result.get("conflict_note") or (
+            conflicts.render(text, variant) if variant else text
+        )
         # The speaker label is kept out of the body. The reconciler is handed
         # the words only, because a model treats "**Name** :" as formatting and
         # returns the line without it; the name is not its to drop. It is
@@ -725,7 +734,7 @@ class STTBot:
                     numbered,
                     reconcile_cfg.base_url,
                     reconcile_cfg.api_key,
-                    reconcile_cfg.model,
+                    reconcile_cfg.models,
                     reconcile_cfg.timeout_seconds,
                     notice,
                     reconcile_cfg.reasoning_effort,
@@ -739,6 +748,10 @@ class STTBot:
         lines: list[str] = []
         for index, entry in enumerate(entries, 1):
             body = replacements.get(index, entry["body"])
+            # The renderer adds no mark of its own any more, but a model given
+            # old text can echo one back, and one arrived on lines that held no
+            # bracket at all. Nothing decorative survives the judge.
+            body = body.replace("\u26a0", "").strip()
             if not body.strip():
                 entry["final"] = ""
                 continue  # the reconciler judged the line a fabrication
@@ -768,11 +781,11 @@ class STTBot:
         own, and stays readable months later. The channel gets the file and a
         line saying what is in it.
         """
-        disputed = sum(1 for entry in entries if "⚠" in (entry.get("final") or ""))
+        disputed = _disputed_count(entries)
         if reviewed:
             summary = [f"**Transcription (reviewed)** · {len(entries)} utterances"]
             if disputed:
-                summary.append(f"{disputed} disputed ⚠")
+                summary.append(f"{disputed} with a dispute")
         else:
             summary = [
                 f"**Transcription** · {len(entries)} utterances",
@@ -826,9 +839,18 @@ class STTBot:
             stem = f"transcription-{stamp:%Y-%m-%d-%H%M}" + (
                 "-reviewed" if reviewed else ""
             )
+            # Blank lines between entries. Discord renders markdown, and
+            # consecutive lines with nothing between them collapse into one
+            # paragraph, so the whole session arrived as a single run of text.
+            disputed = sum(
+                1 for e in entries if "\u26a0" in (e.get("final") or "")
+            )
             (out_dir / f"{stem}.md").write_text(
-                f"# Transcription — {stamp:%Y-%m-%d %H:%M}\n\n"
-                + "\n".join(lines)
+                f"# Transcription \u2014 {stamp:%Y-%m-%d %H:%M}\n\n"
+                f"{len(entries)} utterances \u00b7 {disputed} with a dispute.\n\n"
+                "A bracket marks where the two models heard different words, "
+                "and \u2205 means one heard nothing there.\n\n"
+                + "\n\n".join(lines)
                 + "\n",
                 encoding="utf-8",
             )

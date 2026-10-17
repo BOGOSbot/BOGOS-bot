@@ -126,22 +126,47 @@ def reconcile(
     the caller can tell the channel that the transcript is delayed rather than
     lost; it receives the reason and the attempt number.
     """
+    if isinstance(model, str):
+        model = [model]
     merged: dict[int, str] = {}
     for start in range(0, len(numbered), BATCH):
         part = numbered[start:start + BATCH]
         attempt = 0
         while True:
             attempt += 1
-            result = _once(part, base_url, api_key, model, timeout, effort)
-            if not result.error:
-                merged.update(result.replacements)
+            errors = []
+            fatal = ""
+            settled = False
+            for candidate in model:
+                result = _once(part, base_url, api_key, candidate, timeout, effort)
+                if not result.error:
+                    merged.update(result.replacements)
+                    settled = True
+                    break
+                if result.error.startswith(("HTTP 401", "HTTP 403")):
+                    # A refused key will be refused again. Retrying it only
+                    # hides a configuration mistake behind a slow session.
+                    fatal = result.error
+                    break
+                errors.append(f"{candidate}: {result.error}")
+            if fatal:
+                logger.error(
+                    "Reconciler refused the key (%s); leaving every line disputed.",
+                    fatal,
+                )
+                return Reconciled(replacements=merged, error=fatal)
+            if settled:
                 break
+            # Every model refused this batch. Wait, then try them again.
             logger.warning(
-                "Batch at %d failed (attempt %d): %s", start, attempt, result.error
+                "Batch at %d failed (attempt %d): %s",
+                start,
+                attempt,
+                "; ".join(errors),
             )
             if on_retry is not None:
                 try:
-                    on_retry(result.error, attempt)
+                    on_retry(errors[0], attempt)
                 except Exception as exc:  # a notice must never kill the retry
                     logger.warning("Retry notice failed: %s", exc)
             time.sleep(min(BACKOFF * (2 ** (attempt - 1)), BACKOFF_MAX))
