@@ -170,10 +170,11 @@ def render(primary: str, other: str) -> str:
         # A hesitation sitting in front of the real difference belongs in plain
         # text, not inside the bracket. "ouais. Necrozor" against "Necrozard"
         # should bracket the name, not the hesitation before it.
-        while primary_span and not _is_content(_key(primary_span[0])):
+        while (
+            len(primary_span) > len(other_span)
+            and not _is_content(_key(primary_span[0]))
+        ):
             out.append(primary_span.pop(0))
-            if not primary_span and not other_span:
-                break
 
         # One model repeating a phrase the other said once is a stutter, not a
         # different reading. Bracketing it puts identical words on both sides of

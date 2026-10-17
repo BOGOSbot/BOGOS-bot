@@ -164,3 +164,23 @@ def test_a_word_split_two_ways_is_not_a_conflict():
 def test_a_real_word_order_change_is_still_shown():
     """Reordered words are not the same word split differently."""
     assert "(" in conflicts.render("le chat", "chat le")
+
+
+def test_a_one_letter_replacement_keeps_its_side_of_the_bracket():
+    """"a" against "aurait" is a replacement, not an insertion."""
+    line = conflicts.render("Ah, ça a été sublime.", "Ça aurait été sublime.")
+    assert "(a | aurait)" in line
+    assert "(∅ | aurait)" not in line
+
+
+def test_filler_is_still_trimmed_when_the_primary_really_is_longer():
+    """The case the trim exists for: an extra hesitation, then a real swap."""
+    line = conflicts.render("problème ouais. Nécrozor va", "problème Necrozard va")
+    assert "(Nécrozor | Necrozard)" in line
+    assert "(ouais" not in line
+
+
+def test_an_extra_word_the_other_model_never_said_is_an_insertion():
+    """gpt said "des attaques"; voxtral said "des assantes attaques"."""
+    line = conflicts.render("Il a des attaques,", "Il a des assantes attaques.")
+    assert "(∅ | assantes)" in line
