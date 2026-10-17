@@ -115,6 +115,29 @@ def _key(token: str) -> str:
     return _NON_WORD.sub("", flat)
 
 
+# Elided clitics. "qu'il" and "il" are the same word to a listener, and a
+# model that restarts a sentence often drops the elision on the repeat, which
+# made an otherwise obvious stutter invisible to a strict comparison.
+_ELISIONS = ("qu", "l", "d", "j", "m", "t", "s", "n", "c")
+
+
+def _similar(left: str, right: str) -> bool:
+    """Equal, or equal once an elided clitic is set aside."""
+    if left == right:
+        return True
+    short, long = (left, right) if len(left) <= len(right) else (right, left)
+    if len(short) < 2 or not long.endswith(short):
+        return False
+    return long[: len(long) - len(short)] in _ELISIONS
+
+
+def _matches(span: list[str], unit: list[str]) -> bool:
+    """True when the span repeats the unit, allowing an elision per word."""
+    return len(span) == len(unit) and all(
+        _similar(a, b) for a, b in zip(span, unit)
+    )
+
+
 def _repeats(keys: list[str], start: int, end: int) -> bool:
     """True when keys[start:end] is a phrase stuttered from beside it.
 
@@ -131,10 +154,10 @@ def _repeats(keys: list[str], start: int, end: int) -> bool:
         if size % period:
             continue
         after = keys[end:end + period]
-        if len(after) == period and span == after * (size // period):
+        if len(after) == period and _matches(span, after * (size // period)):
             return True
         before = keys[max(0, start - period):start]
-        if len(before) == period and span == before * (size // period):
+        if len(before) == period and _matches(span, before * (size // period)):
             return True
     return False
 

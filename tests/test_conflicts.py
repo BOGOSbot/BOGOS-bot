@@ -184,3 +184,16 @@ def test_an_extra_word_the_other_model_never_said_is_an_insertion():
     """gpt said "des attaques"; voxtral said "des assantes attaques"."""
     line = conflicts.render("Il a des attaques,", "Il a des assantes attaques.")
     assert "(∅ | assantes)" in line
+
+
+def test_a_restart_that_drops_an_elision_is_still_a_stutter():
+    """voxtral restarted mid-sentence; the repeat drops the elided clitic."""
+    a = "c'est parce qu'il réserve pour son collègue."
+    b = "c'est parce qu'il réserve pour... Il réserve pour son collègue."
+    assert conflicts.classify(a, b) is conflicts.Verdict.SAME
+    assert "(∅" not in conflicts.render(a, b)
+
+
+def test_an_elision_does_not_swallow_a_real_deletion():
+    """qu'il against il is a repeat; chien against le is not."""
+    assert "(chien" in conflicts.render("j'ai vu le chien et le chat", "j'ai vu le chat")
