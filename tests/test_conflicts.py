@@ -73,8 +73,13 @@ def test_render_treats_punctuation_as_no_difference():
     assert conflicts.render("on passe à cinq, ok", "on passe à 5. ok") == "on passe à (cinq | 5), ok"
 
 
-def test_render_marks_an_inserted_word():
-    assert conflicts.render("Je pense pas", "Je ne pense pas") == "Je (∅ | ne) pense pas"
+def test_render_marks_an_inserted_content_word():
+    assert conflicts.render("Je pense", "Je pense vraiment") == "Je pense (∅ | vraiment)"
+
+
+def test_render_does_not_bracket_a_grammar_word():
+    """The "ne" changes nothing, so it is not worth a reader's attention."""
+    assert conflicts.render("Je pense pas", "Je ne pense pas") == "Je pense pas"
 
 
 def test_render_leaves_an_agreement_alone():
@@ -121,3 +126,20 @@ def test_render_does_not_put_identical_words_across_a_bracket():
     """The old output read as an error: (c'est pas encore, | ∅) c'est pas encore."""
     line = conflicts.render("il dit bonjour bonjour salut", "il dit bonjour salut")
     assert line == "il dit bonjour salut"
+
+
+def test_a_filler_only_span_is_not_bracketed():
+    """voxtral really did drop the "Ah"; a reader still does not need to weigh it."""
+    line = conflicts.render("Ah ça craindre", "ça craindre")
+    assert "(" not in line
+
+
+def test_the_bracket_lands_on_the_content_word_not_the_hesitation():
+    a = (
+        "Ah ça commence à craindre. C'est un peu le problème ouais. "
+        "Nécrozor va tout mettre dans le brigandé."
+    )
+    b = "Ça commence à craindre. C'est un peu le problème. Necrozard va tout mettre dans le Brigande."
+    line = conflicts.render(a, b)
+    assert "(Nécrozor | Necrozard)" in line
+    assert "(ouais" not in line

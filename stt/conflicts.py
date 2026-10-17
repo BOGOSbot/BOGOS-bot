@@ -161,7 +161,15 @@ def render(primary: str, other: str) -> str:
             out.append(" ".join(left[i1:i2]))
             continue
 
-        primary_span, other_span = left[i1:i2], right[j1:j2]
+        primary_span, other_span = list(left[i1:i2]), list(right[j1:j2])
+
+        # A hesitation sitting in front of the real difference belongs in plain
+        # text, not inside the bracket. "ouais. Necrozor" against "Necrozard"
+        # should bracket the name, not the hesitation before it.
+        while primary_span and not _is_content(_key(primary_span[0])):
+            out.append(primary_span.pop(0))
+            if not primary_span and not other_span:
+                break
 
         # One model repeating a phrase the other said once is a stutter, not a
         # different reading. Bracketing it puts identical words on both sides of
@@ -169,6 +177,17 @@ def render(primary: str, other: str) -> str:
         if tag == "delete" and _repeats(left_keys, i1, i2):
             continue
         if tag == "insert" and _repeats(right_keys, j1, j2):
+            continue
+
+        # Nothing but grammar and filler moved here. "Ah" against silence is a
+        # real omission but not one a reader has to weigh, and bracketing it in
+        # a line already flagged for something else is noise. Keep the primary's
+        # words so the sentence still reads, and mark nothing.
+        primary_content = [t for t in primary_span if _is_content(_key(t))]
+        other_content = [t for t in other_span if _is_content(_key(t))]
+        if not primary_content and not other_content:
+            if primary_span:
+                out.append(" ".join(primary_span))
             continue
 
         # Standalone punctuation arrives as its own token ("truc !" against
