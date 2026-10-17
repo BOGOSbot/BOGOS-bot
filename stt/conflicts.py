@@ -36,6 +36,12 @@ _NUMBERS = {
 _NON_WORD = re.compile(r"[^\w]", re.UNICODE)
 _PUNCT = "\"'()[]{}<>,.;:!?«»…-–—/\\"
 
+# Every bracket is a place the two models disagree, and the marker sits right
+# after it rather than at the start of the line: the reader meets the dispute and
+# the flag together, and a line number of them can be scanned without the eye
+# jumping to the margin.
+MARK = "⚠"
+
 
 @dataclass(frozen=True)
 class Difference:
@@ -297,11 +303,11 @@ def render(primary: str, other: str) -> str:
         if trail_p and trail_o:
             bare_p = " ".join(t for t in (_bare(x) for x in primary_span) if t)
             bare_o = " ".join(t for t in (_bare(x) for x in other_span) if t)
-            out.append("(%s | %s)%s" % (bare_p or "∅", bare_o or "∅", trail_p))
+            out.append("(%s | %s)%s%s" % (bare_p or "∅", bare_o or "∅", trail_p, MARK))
         else:
             out.append(
-                "(%s | %s)"
-                % (" ".join(primary_span) or "∅", " ".join(other_span) or "∅")
+                "(%s | %s)%s"
+                % (" ".join(primary_span) or "∅", " ".join(other_span) or "∅", MARK)
             )
     return " ".join(out)
 
