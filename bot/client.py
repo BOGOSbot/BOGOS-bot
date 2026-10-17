@@ -11,7 +11,9 @@ Deviations from upstream, both deliberate:
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
+import re
 import time
 from datetime import datetime, timezone
 from multiprocessing import Queue as MPQueue
@@ -26,10 +28,23 @@ from bot import pairing
 from bot.audio_sink import STTAudioSink
 from bot.cleanup import clean_lines, render_diff
 from bot.recorder import ChannelRecorder
-from config import audio_cfg, cleanup_cfg, discord_cfg, process_cfg, transcript_cfg
+from config import (
+    audio_cfg,
+    cleanup_cfg,
+    discord_cfg,
+    process_cfg,
+    reconcile_cfg,
+    transcript_cfg,
+)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _body_of(line: str) -> str:
+    """The text after the "**Speaker** : " prefix, which may contain brackets."""
+    match = re.match(r"^\*\*.+?\*\*\s*:\s*(.*)$", line, re.S)
+    return match.group(1) if match else line
 
 
 def _short_model(model: str) -> str:
@@ -65,6 +80,10 @@ class STTBot:
         self._session_raw: list[tuple[str, str]] = []
         self._session_started_at: datetime | None = None
         self._pending: list[str] = []
+        # Nothing is posted while the session runs. Every utterance is kept
+        # here with both readings, and the whole session is reconciled and
+        # posted once, at the end.
+        self._entries: list[dict] = []
         self._last_flush: float = 0.0
         self._speaker_names: dict[int, str] = {}
         # Set when the STT process reports its transcription backlog is empty.
@@ -409,7 +428,16 @@ class STTBot:
             line += f"\n> *{label} : {note}*"
         self._session_lines.append(line)
         self._session_raw.append((name, text))
-        self._pending.append(line)
+        self._entries.append(
+            {
+                "name": name,
+                "primary": text,
+                "second": variant or "",
+                "alt_model": result.get("alt_model", ""),
+                "note": result.get("conflict_note") or "",
+                "line": line,
+            }
+        )
 
     def _speaker_name(self, user_id: object) -> str:
         """Resolve a Discord user id to a display name, with caching."""
@@ -546,17 +574,21 @@ class STTBot:
             logger.error("Could not post corrections: %s", exc)
 
     async def _close_session(self) -> None:
-        """Flush what is buffered, keep a local copy, and reset.
+        """Reconcile the two readings, post the result, keep the originals.
 
-        The channel is already the transcript: lines are posted live as they
-        are transcribed, so replaying them at the end would duplicate every
-        word. Only the local markdown copy is written here.
+        Nothing is posted while the session runs. The channel gets one
+        reconciled transcript at the end, for two reasons: a stream of variant
+        readings every few seconds is harder to read than the same text in one
+        piece, and judging a line needs the lines around it.
+
+        Both original readings are written to disk next to the reconciled text.
+        The reconciled transcript is a product; the pair it came from is the
+        evidence, and a reconciler that discards its evidence cannot be
+        evaluated or improved.
         """
         channel = self._transcript_channel
-        lines = self._session_lines
         started = self._session_started_at
-
-        await self._maybe_flush(force=True)
+        entries = list(self._entries)
 
         if self._recorder is not None:
             self._recorder.close()
@@ -565,19 +597,113 @@ class STTBot:
         self._transcript_channel = None
         self._session_lines = []
         self._session_raw = []
+        self._entries = []
         self._pending = []
         self._session_started_at = None
 
-        if channel is None or not lines:
+        if channel is None or not entries:
             return
 
         stamp = (started or datetime.now(timezone.utc)).astimezone()
-        body = (
-            f"# Transcription — {stamp:%Y-%m-%d %H:%M}\n\n"
-            + "\n".join(lines)
-            + "\n"
+        lines = await asyncio.to_thread(self._reconcile, entries)
+        await self._post_transcript(channel, lines)
+        self._save_session(entries, lines, stamp)
+
+    def _reconcile(self, entries: list[dict]) -> list[str]:
+        """Settle the disputed lines, or leave them standing.
+
+        Blocking, so it runs off the event loop. Any failure leaves the
+        mechanical reconciliation in place: the bracket stays, both readings
+        stay visible, and nothing is lost but the polish. That is the safe
+        direction, because a missing transcript is worse than a rough one.
+        """
+        # The speaker name carries parentheses of its own, so the check runs on
+        # the body. Testing the whole line once sent all 161 lines to the model
+        # instead of the 45 that actually had a dispute in them.
+        numbered = [
+            f"{i}. {entry['line']}"
+            for i, entry in enumerate(entries, 1)
+            if "(" in _body_of(entry["line"])
+        ]
+        replacements: dict[int, str] = {}
+        if numbered and reconcile_cfg.enabled:
+            try:
+                from stt.reconciler import reconcile
+
+                settled = reconcile(
+                    numbered,
+                    reconcile_cfg.base_url,
+                    reconcile_cfg.api_key,
+                    reconcile_cfg.model,
+                    reconcile_cfg.timeout_seconds,
+                )
+                replacements = settled.replacements
+                if settled.error:
+                    logger.warning("Reconciler returned %s", settled.error)
+            except Exception as exc:
+                logger.warning("Reconciler unavailable: %s", exc)
+
+        lines: list[str] = []
+        for index, entry in enumerate(entries, 1):
+            body = replacements.get(index, entry["line"])
+            entry["final"] = body
+            if not body.strip():
+                continue  # the reconciler judged the line a fabrication
+            lines.append(body)
+        logger.info(
+            "Session reconciled: %d line(s), %d settled by the model.",
+            len(lines),
+            len(replacements),
         )
-        self._save_transcript(body, stamp)
+        return lines
+
+    async def _post_transcript(self, channel, lines: list[str]) -> None:
+        """Post the reconciled transcript, batched under the message cap."""
+        batch: list[str] = []
+        size = 0
+        for line in lines:
+            if size + len(line) + 1 > SAFE_MESSAGE_BUDGET and batch:
+                try:
+                    await channel.send("\n".join(batch))
+                except discord.HTTPException as exc:
+                    logger.error("Could not post the transcript: %s", exc)
+                    return
+                batch, size = [], 0
+            batch.append(line)
+            size += len(line) + 1
+        if batch:
+            try:
+                await channel.send("\n".join(batch))
+            except discord.HTTPException as exc:
+                logger.error("Could not post the transcript: %s", exc)
+
+    def _save_session(
+        self, entries: list[dict], lines: list[str], stamp: datetime
+    ) -> None:
+        """Keep the reconciled text and the two readings it came from."""
+        try:
+            out_dir = Path(transcript_cfg.save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem = f"transcript-{stamp:%Y%m%d-%H%M%S}"
+            (out_dir / f"{stem}.md").write_text(
+                f"# Transcription — {stamp:%Y-%m-%d %H:%M}\n\n"
+                + "\n".join(lines)
+                + "\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "started": stamp.isoformat(),
+                "utterances": len(entries),
+                "final_lines": len(lines),
+                "entries": entries,
+            }
+            (out_dir / f"{stem}.json").write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info("Session saved to %s", out_dir / stem)
+        except Exception as exc:
+            logger.error("Could not save the session: %s", exc)
 
     def _save_transcript(self, body: str, stamp: datetime) -> Path | None:
         """Write a local markdown copy; the channel post is the primary record."""

@@ -105,6 +105,57 @@ def _trail(token: str) -> str:
     return token[len(token.rstrip(_PUNCT)):]
 
 
+# Spelling families that are not speech differences, and that the reconciler
+# can therefore merge without judgement: a number written out or in digits, a
+# plural, an elided clitic. Measured on this session they account for most of
+# the "same meaning" class, which is work an LLM should never be paid for.
+# A clitic expands to the word it elides. Keeping the particle rather than
+# dropping it makes "t'as" and "tu as" the same string once flattened, which is
+# what they are.
+_ELIDE = {
+    "j": "je", "t": "tu", "s": "se", "m": "me", "n": "ne", "l": "le",
+    "d": "de", "c": "ce", "qu": "que", "jusqu": "jusque", "lorsqu": "lorsque",
+    "puisqu": "puisque", "quoiqu": "quoique",
+}
+
+
+def _mech(token: str) -> str:
+    """A spelling-insensitive form of one token."""
+    flat = _fold(token)
+    for mark in ("'", "\u2019"):
+        if mark in flat:
+            head, tail = flat.split(mark, 1)
+            flat = _ELIDE.get(head, head) + tail
+            break
+    flat = _NON_WORD.sub("", flat)
+    flat = _NUMBERS.get(flat, flat)
+    if len(flat) > 3 and flat.endswith("s"):
+        flat = flat[:-1]
+    return flat
+
+
+def _fold(text: str) -> str:
+    flat = unicodedata.normalize("NFKD", text.lower())
+    return "".join(ch for ch in flat if not unicodedata.combining(ch))
+
+
+def _same_thing(left: list[str], right: list[str]) -> bool:
+    """True when two spans differ only in how they are written down."""
+    if not left and not right:
+        return True
+    a = [_mech(t) for t in left]
+    b = [_mech(t) for t in right]
+    if "".join(a) == "".join(b):
+        return True
+    # A model that stops mid-word leaves a prefix: "demi" against "demi-femme".
+    if len(a) == len(b) and a:
+        return all(
+            x == y or (len(x) >= 4 and len(y) >= 4 and (x.startswith(y) or y.startswith(x)))
+            for x, y in zip(a, b)
+        )
+    return False
+
+
 def _key(token: str) -> str:
     """Alignment key: case, accents and punctuation gone, spelling kept."""
     flat = unicodedata.normalize("NFKD", _bare(token).lower())
@@ -205,6 +256,10 @@ def render(primary: str, other: str) -> str:
         if tag == "delete" and _repeats(left_keys, i1, i2):
             continue
         if tag == "insert" and _repeats(right_keys, j1, j2):
+            continue
+
+        if _same_thing(primary_span, other_span):
+            out.append(" ".join(primary_span) or " ".join(other_span))
             continue
 
         # Same letters, split differently: "A2" against "à 2", "tues" against
@@ -321,6 +376,11 @@ def classify(primary: str, other: str) -> Verdict:
     if not compare(primary, other):
         return Verdict.SAME
     if _only_repeats(primary, other):
+        return Verdict.SAME
+    if all(
+        _same_thing(d.primary.split(), d.other.split())
+        for d in compare(primary, other)
+    ):
         return Verdict.SAME
     left, right = normalise_tokens(primary), normalise_tokens(other)
     moved = [t for t in set(left) ^ set(right) if t]

@@ -8,11 +8,11 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 
 | Command | What it does |
 |---|---|
-| `!transcript` | Joins your voice channel and posts the transcript as it goes |
-| `!stop` | Finishes the queue, posts it, leaves |
+| `!transcript` | Joins your voice channel and starts listening |
+| `!stop` | Reconciles the two readings and posts the transcript |
 | `!pairing <sheets link>` | Reports who still owes matchups or a list, per team tab |
 
-Transcription is not live. Silero VAD cuts the audio, a worker pool transcribes it, and an ordered emitter posts batches of results. A slow model delays the transcript but never blocks the audio or drops speech.
+Transcription is not live. Silero VAD cuts the audio, a worker pool transcribes every utterance **twice** with two different models, and the two readings are reconciled at word level as they go. Nothing is posted during the session. At `!stop` an LLM settles the differences the mechanical pass could not, and the reconciled transcript is posted once. Both original readings are written to disk beside it.
 
 ## Install
 
@@ -39,7 +39,8 @@ On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the sess
 - `!pairing` reads the sheet over its public link export and sends no credentials. If the sheet is private, it will not work.
 - Both the session recorder and the per-utterance dumps write other people's voices to disk. The widget's Record switch turns both off and picks the folder; that switch wins over `.env`. Ask people before you turn it on.
 - `CLEANUP_ENABLED` is off. A text pass cannot tell a misheard word from a real one, so it has nothing useful to do.
-- The second opinion (`STT_SECOND_OPINION`) runs every utterance through a second model and prints its reading when the two disagree on meaning. Differences confined to grammar and filler are dropped, and the second reading faces the same rate and artifact guards as the first. It adds spend, not certainty: $0.18/hour on top of gpt's $0.27.
+- The reconciler never hears the audio, so it is never asked which reading is right. It settles what the text can settle and keeps both readings when it cannot, flagged in place. Expect roughly one difference in three to stay flagged.
+- Reconciliation is not free in time. The free SenseNova endpoint answers in about five seconds per disputed line, so a quarter-hour session takes a few minutes to settle. If it fails, the flagged transcript is posted anyway: a rough transcript beats a missing one.
 - Only run on Windows so far, and only against French speech.
 
 ## Tests

@@ -57,7 +57,7 @@ def test_divergence_separates_word_choice_from_a_rebuilt_sentence():
 
 def test_render_marks_the_words_that_moved():
     """The reader sees which word is contested, in place, once."""
-    assert conflicts.render("il est pistol", "il est pistolet") == "il est (pistol | pistolet)"
+    assert conflicts.render("il est pistolet", "il est canon") == "il est (pistolet | canon)"
 
 
 def test_render_of_the_hard_one_from_the_session():
@@ -65,12 +65,12 @@ def test_render_of_the_hard_one_from_the_session():
         "Ça me va. Ça se rate. Sophie, tu fais douze, sale bâtard.",
         "Ça me va. Ça se rate. Sauf si tu fais 12. Sale bâtard.",
     )
-    assert line == "Ça me va. Ça se rate. (Sophie, | Sauf si) tu fais (douze | 12), sale bâtard."
+    assert line == "Ça me va. Ça se rate. (Sophie, | Sauf si) tu fais douze, sale bâtard."
 
 
 def test_render_treats_punctuation_as_no_difference():
     """A comma against a full stop is not something to judge."""
-    assert conflicts.render("on passe à cinq, ok", "on passe à 5. ok") == "on passe à (cinq | 5), ok"
+    assert conflicts.render("on passe à cinq, ok", "on passe à 5. ok") == "on passe à cinq, ok"
 
 
 def test_render_marks_an_inserted_content_word():
@@ -153,6 +153,17 @@ def test_an_apostrophe_is_not_a_word_difference():
 
 def test_a_hyphen_is_not_a_word_difference_either():
     assert conflicts.render("un giga-chad", "un gigachad") == "un giga-chad"
+
+
+def test_a_number_written_either_way_is_merged_not_flagged():
+    """The automatable family: spelling, so no reader is asked about it."""
+    assert conflicts.render("il fait quatre", "il fait 4") == "il fait quatre"
+    assert conflicts.render("les bon", "les bons") != "" and "(" not in conflicts.render("les bon", "les bons")
+
+
+def test_a_different_number_is_not_merged():
+    """deux against douze is a real difference, not spelling."""
+    assert "(deux | douze)" in conflicts.render("il fait deux", "il fait douze")
 
 
 def test_a_word_split_two_ways_is_not_a_conflict():

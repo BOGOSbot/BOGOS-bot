@@ -296,6 +296,40 @@ class CleanupConfig:
 
 
 # ──────────────────────────────────────────────
+# End-of-session reconciliation (LLM)
+# ──────────────────────────────────────────────
+@dataclass(frozen=True)
+class ReconcileConfig:
+    """One LLM pass over a finished session, to settle what the text can settle.
+
+    Two readings are reconciled mechanically as they arrive. What is left is the
+    same meaning said differently, a fabricated reading, or a real dispute. The
+    model settles the first two and is told to keep both readings for the third,
+    because it never hears the audio and the wrong reading is usually the fluent
+    one. Costs nothing on the free tier and one call per session.
+    """
+    enabled: bool = field(
+        default_factory=lambda: _env_bool("RECONCILE_ENABLED", True)
+    )
+    model: str = field(
+        default_factory=lambda: _env_str(
+            "RECONCILE_MODEL", "sensenova-6.8-flash-lite"
+        )
+    )
+    base_url: str = field(
+        default_factory=lambda: _env_str(
+            "SENSENOVA_BASE_URL", "https://token.sensenova.ai/v1"
+        )
+    )
+    api_key: str = field(
+        default_factory=lambda: _env_str("SENSENOVA_API_KEY", "")
+    )
+    timeout_seconds: float = field(
+        default_factory=lambda: _env_float("RECONCILE_TIMEOUT", 180.0)
+    )
+
+
+# ──────────────────────────────────────────────
 # Transcript output
 # ──────────────────────────────────────────────
 @dataclass(frozen=True)
@@ -330,5 +364,6 @@ stt_cfg = STTConfig()
 api_cfg = APIConfig()
 cleanup_cfg = CleanupConfig()
 transcript_cfg = TranscriptConfig()
+reconcile_cfg = ReconcileConfig()
 process_cfg = ProcessConfig()
 log_cfg = LogConfig()
