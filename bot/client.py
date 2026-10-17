@@ -41,12 +41,6 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def _body_of(line: str) -> str:
-    """The text after the "**Speaker** : " prefix, which may contain brackets."""
-    match = re.match(r"^\*\*.+?\*\*\s*:\s*(.*)$", line, re.S)
-    return match.group(1) if match else line
-
-
 def _short_model(model: str) -> str:
     """mistralai/voxtral-small-24b-2507-stt -> voxtral, for a readable label."""
     tail = (model or "").rsplit("/", 1)[-1]
@@ -415,9 +409,9 @@ class STTBot:
         if self._transcript_channel is None:
             return  # no active session; the log line is the only trace
 
-        line = f"**{name}** : {text}"
         # Both readings, so the reader judges. No model arbitrates: the wrong
         # reading is usually the fluent one, which is what a text judge prefers.
+        body = text
         variant = result.get("alt_text")
         if variant:
             label = _short_model(result.get("alt_model", ""))
@@ -425,7 +419,12 @@ class STTBot:
             # line is identical and repeating it wastes the reader's eye. When
             # the note is empty the whole reading diverged, so show it whole.
             note = result.get("conflict_note") or variant
-            line += f"\n> *{label} : {note}*"
+            body = f"{body}\n> *{label} : {note}*"
+        # The speaker label is kept out of the body. The reconciler is handed
+        # the words only, because a model treats "**Name** :" as formatting and
+        # returns the line without it; the name is not its to drop. It is
+        # reattached when the reconciled line is rebuilt.
+        line = f"**{name}** : {body}"
         self._session_lines.append(line)
         self._session_raw.append((name, text))
         self._entries.append(
@@ -436,6 +435,7 @@ class STTBot:
                 "alt_model": result.get("alt_model", ""),
                 "note": result.get("conflict_note") or "",
                 "line": line,
+                "body": body,
             }
         )
 
@@ -621,9 +621,9 @@ class STTBot:
         # the body. Testing the whole line once sent all 161 lines to the model
         # instead of the 45 that actually had a dispute in them.
         numbered = [
-            f"{i}. {entry['line']}"
+            f"{i}. {entry['body']}"
             for i, entry in enumerate(entries, 1)
-            if "(" in _body_of(entry["line"])
+            if "(" in entry["body"]
         ]
         replacements: dict[int, str] = {}
         if numbered and reconcile_cfg.enabled:
@@ -645,11 +645,13 @@ class STTBot:
 
         lines: list[str] = []
         for index, entry in enumerate(entries, 1):
-            body = replacements.get(index, entry["line"])
-            entry["final"] = body
+            body = replacements.get(index, entry["body"])
             if not body.strip():
+                entry["final"] = ""
                 continue  # the reconciler judged the line a fabrication
-            lines.append(body)
+            line = f"**{entry['name']}** : {body}"
+            entry["final"] = line
+            lines.append(line)
         logger.info(
             "Session reconciled: %d line(s), %d settled by the model.",
             len(lines),
