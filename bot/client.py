@@ -787,10 +787,10 @@ class STTBot:
             if disputed:
                 summary.append(f"{disputed} with a dispute")
         else:
-            summary = [
-                f"**Transcription** · {len(entries)} utterances",
-                "the review is running, a reviewed file will follow",
-            ]
+            summary = [f"**Transcription** · {len(entries)} utterances"]
+            if disputed:
+                summary.append(f"{disputed} with a dispute")
+            summary.append("the review is running, a reviewed file will follow")
         if path is None:
             # Writing the file failed, so post the text rather than nothing.
             await self._post_lines(channel, lines)
@@ -842,9 +842,10 @@ class STTBot:
             # Blank lines between entries. Discord renders markdown, and
             # consecutive lines with nothing between them collapse into one
             # paragraph, so the whole session arrived as a single run of text.
-            disputed = sum(
-                1 for e in entries if "\u26a0" in (e.get("final") or "")
-            )
+            # Counted from the brackets themselves. This once tested for the
+            # removed marker, so both files claimed no dispute while one held
+            # forty-four of them.
+            disputed = _disputed_count(entries)
             (out_dir / f"{stem}.md").write_text(
                 f"# Transcription \u2014 {stamp:%Y-%m-%d %H:%M}\n\n"
                 f"{len(entries)} utterances \u00b7 {disputed} with a dispute.\n\n"

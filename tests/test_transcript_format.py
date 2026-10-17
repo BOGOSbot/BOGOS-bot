@@ -40,3 +40,24 @@ def test_a_blockquote_never_starts_a_body():
     from bot import client
     src = inspect.getsource(client.STTBot._handle_result)
     assert "> *" not in src
+
+
+def test_the_header_counts_the_brackets_the_file_actually_has(tmp_path, monkeypatch):
+    """It once said 0 while the file held 44: the count tested for the marker."""
+    monkeypatch.setattr(
+        "bot.client.transcript_cfg", types.SimpleNamespace(save_dir=str(tmp_path))
+    )
+    bot = object.__new__(STTBot)
+    lines = [
+        "**A** : il fait (quatre | 4)",
+        "**B** : une phrase sans conflit",
+        "**C** : (∅ | Le 1er janvier 2010)",
+    ]
+    bot._save_session(
+        [{"name": n, "final": l} for n, l in zip("ABC", lines)],
+        lines,
+        datetime(2026, 10, 17, 21, 11, tzinfo=timezone.utc),
+    )
+    body = (tmp_path / "transcription-2026-10-17-2111.md").read_text(encoding="utf-8")
+    assert "3 utterances · 2 with a dispute" in body
+    assert body.count("**") == 6
