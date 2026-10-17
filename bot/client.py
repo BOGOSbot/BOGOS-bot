@@ -606,8 +606,8 @@ class STTBot:
 
         stamp = (started or datetime.now(timezone.utc)).astimezone()
         lines = await asyncio.to_thread(self._reconcile, entries)
-        await self._post_transcript(channel, lines)
-        self._save_session(entries, lines, stamp)
+        path = self._save_session(entries, lines, stamp)
+        await self._post_transcript(channel, path, lines, entries)
 
     def _reconcile(self, entries: list[dict]) -> list[str]:
         """Settle the disputed lines, or leave them standing.
@@ -657,8 +657,35 @@ class STTBot:
         )
         return lines
 
-    async def _post_transcript(self, channel, lines: list[str]) -> None:
-        """Post the reconciled transcript, batched under the message cap."""
+    async def _post_transcript(
+        self, channel, path: Path | None, lines: list[str], entries: list[dict]
+    ) -> None:
+        """Post the session as a dated file rather than a wall of text.
+
+        A transcript pasted into the channel is unscrollable, splits across
+        messages, and loses its formatting. A file is one message, opens on its
+        own, and stays readable months later. The channel gets the file and a
+        line saying what is in it.
+        """
+        disputed = sum(1 for entry in entries if "⚠" in (entry.get("final") or ""))
+        summary = [f"**Transcription** · {len(entries)} utterances"]
+        if disputed:
+            summary.append(f"{disputed} disputed ⚠")
+        if path is None:
+            # Writing the file failed, so post the text rather than nothing.
+            await self._post_lines(channel, lines)
+            return
+        try:
+            await channel.send(
+                " · ".join(summary),
+                file=discord.File(path, filename=path.name),
+            )
+        except (discord.HTTPException, OSError) as exc:
+            logger.error("Could not post the transcript file: %s", exc)
+            await self._post_lines(channel, lines)
+
+    async def _post_lines(self, channel, lines: list[str]) -> None:
+        """Last resort: post the text, batched under the message cap."""
         batch: list[str] = []
         size = 0
         for line in lines:
@@ -679,12 +706,12 @@ class STTBot:
 
     def _save_session(
         self, entries: list[dict], lines: list[str], stamp: datetime
-    ) -> None:
+    ) -> Path | None:
         """Keep the reconciled text and the two readings it came from."""
         try:
             out_dir = Path(transcript_cfg.save_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
-            stem = f"transcript-{stamp:%Y%m%d-%H%M%S}"
+            stem = f"transcription-{stamp:%Y-%m-%d-%H%M}"
             (out_dir / f"{stem}.md").write_text(
                 f"# Transcription — {stamp:%Y-%m-%d %H:%M}\n\n"
                 + "\n".join(lines)
@@ -702,8 +729,10 @@ class STTBot:
                 encoding="utf-8",
             )
             logger.info("Session saved to %s", out_dir / stem)
+            return out_dir / f"{stem}.md"
         except Exception as exc:
             logger.error("Could not save the session: %s", exc)
+            return None
 
     def _save_transcript(self, body: str, stamp: datetime) -> Path | None:
         """Write a local markdown copy; the channel post is the primary record."""

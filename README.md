@@ -12,7 +12,7 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 | `!stop` | Reconciles the two readings and posts the transcript |
 | `!pairing <sheets link>` | Reports who still owes matchups or a list, per team tab |
 
-Transcription is not live. Silero VAD cuts the audio, a worker pool transcribes every utterance **twice** with two different models, and the two readings are reconciled at word level as they go. Nothing is posted during the session. At `!stop` an LLM settles the differences the mechanical pass could not, and the reconciled transcript is posted once. Both original readings are written to disk beside it.
+Transcription is not live. Silero VAD cuts the audio, a worker pool transcribes every utterance **twice** with two different models, and the two readings are reconciled at word level as they go. Nothing is posted during the session. At `!stop` an LLM settles the differences the mechanical pass could not, and the reconciled transcript is posted to the channel as a dated file, `transcription-2026-10-17-1831.md`. Both original readings are written to disk beside it.
 
 ## Install
 

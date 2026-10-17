@@ -63,8 +63,10 @@ def test_the_session_is_written_with_both_readings(monkeypatch, tmp_path):
     _bot()._save_session(entries, ["**Nathan** : merged"], datetime(2026, 10, 17, 18, 31, tzinfo=timezone.utc))
 
     written = sorted(p.name for p in tmp_path.iterdir())
-    assert len(written) == 2
-    assert written[0].endswith(".json") and written[1].endswith(".md")
+    assert written == [
+        "transcription-2026-10-17-1831.json",
+        "transcription-2026-10-17-1831.md",
+    ]
     payload = (tmp_path / written[0]).read_text(encoding="utf-8")
     assert "battle shop" in payload and "battle shock" in payload
     assert "Le 1er janvier" in payload
