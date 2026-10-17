@@ -589,6 +589,7 @@ class STTBot:
         channel = self._transcript_channel
         started = self._session_started_at
         entries = list(self._entries)
+        logger.info("Closing the session with %d utterance(s).", len(entries))
 
         if self._recorder is not None:
             self._recorder.close()
@@ -601,7 +602,21 @@ class STTBot:
         self._pending = []
         self._session_started_at = None
 
-        if channel is None or not entries:
+        if channel is None:
+            logger.warning("No channel to post the session to: it is lost.")
+            return
+
+        if not entries:
+            # A stop that produced nothing still has to say so. Returning
+            # silently makes a working bot indistinguishable from a broken one,
+            # and leaves the reader unable to tell whether they were heard.
+            try:
+                await channel.send(
+                    "Nothing transcribed — no speech reached me in that "
+                    "session. Check that you were unmuted and in the channel."
+                )
+            except discord.HTTPException as exc:
+                logger.error("Could not post the empty-session notice: %s", exc)
             return
 
         stamp = (started or datetime.now(timezone.utc)).astimezone()
