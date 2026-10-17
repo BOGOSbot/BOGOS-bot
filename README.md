@@ -40,7 +40,7 @@ On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the sess
 - Both the session recorder and the per-utterance dumps write other people's voices to disk. The widget's Record switch turns both off and picks the folder; that switch wins over `.env`. Ask people before you turn it on.
 - `CLEANUP_ENABLED` is off. A text pass cannot tell a misheard word from a real one, so it has nothing useful to do.
 - The reconciler never hears the audio, so it is never asked which reading is right. It settles what the text can settle and keeps both readings when it cannot, flagged in place. Expect roughly one difference in three to stay flagged.
-- Reconciliation is not free in time. The free SenseNova endpoint answers in about five seconds per disputed line, so a quarter-hour session takes a few minutes to settle. If it fails, the flagged transcript is posted anyway: a rough transcript beats a missing one.
+- Reconciliation is not instant. The mechanical transcript is posted the moment `!stop` lands, and the reviewed file follows a few seconds later; if the model stalls, each batch is retried with a doubling backoff and the channel is told once that the review is late. Nothing is lost when it fails, because the first file is already posted.
 - Only run on Windows so far, and only against French speech.
 
 ## Tests

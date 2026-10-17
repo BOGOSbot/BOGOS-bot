@@ -73,8 +73,15 @@ class Reconciled:
     error: str = ""
 
 
-def _payload(model: str, numbered: list[str]) -> dict:
-    return {
+# Some routes sit behind Cloudflare and refuse a bare urllib signature.
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
+def _payload(model: str, numbered: list[str], effort: str = "") -> dict:
+    payload = {
         "model": model,
         "temperature": 0,
         "messages": [
@@ -83,6 +90,9 @@ def _payload(model: str, numbered: list[str]) -> dict:
         ],
         "response_format": {"type": "json_object"},
     }
+    if effort:
+        payload["reasoning_effort"] = effort
+    return payload
 
 
 # Measured on this endpoint: about five seconds per line. Twelve lines keeps a
@@ -108,6 +118,7 @@ def reconcile(
     model: str,
     timeout: float = 75.0,
     on_retry: Callable[[str, int], None] | None = None,
+    effort: str = "",
 ) -> Reconciled:
     """Settle the disputed lines, in batches small enough to answer.
 
@@ -121,7 +132,7 @@ def reconcile(
         attempt = 0
         while True:
             attempt += 1
-            result = _once(part, base_url, api_key, model, timeout)
+            result = _once(part, base_url, api_key, model, timeout, effort)
             if not result.error:
                 merged.update(result.replacements)
                 break
@@ -143,6 +154,7 @@ def _once(
     api_key: str,
     model: str,
     timeout: float = 180.0,
+    effort: str = "",
 ) -> Reconciled:
     """Ask the model to settle the disputed lines.
 
@@ -159,10 +171,11 @@ def _once(
     url = base_url.rstrip("/") + "/chat/completions"
     request = urllib.request.Request(
         url,
-        data=json.dumps(_payload(model, numbered)).encode("utf-8"),
+        data=json.dumps(_payload(model, numbered, effort)).encode("utf-8"),
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

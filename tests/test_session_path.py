@@ -44,7 +44,10 @@ def test_a_failed_model_leaves_the_brackets_standing(monkeypatch):
 def test_the_model_settles_a_line_and_drops_a_fabrication(monkeypatch):
     monkeypatch.setattr(
         "bot.client.reconcile_cfg",
-        types.SimpleNamespace(enabled=True, base_url="u", api_key="k", model="m", timeout_seconds=1),
+        types.SimpleNamespace(
+            enabled=True, base_url="u", api_key="k", model="m",
+            timeout_seconds=1, reasoning_effort="low",
+        ),
     )
     monkeypatch.setattr(
         "stt.reconciler.reconcile",
@@ -79,7 +82,10 @@ def test_the_speaker_name_survives_the_reconciler(monkeypatch):
     """The model is handed words only. It drops "**Name** :" as formatting."""
     monkeypatch.setattr(
         "bot.client.reconcile_cfg",
-        types.SimpleNamespace(enabled=True, base_url="u", api_key="k", model="m", timeout_seconds=1),
+        types.SimpleNamespace(
+            enabled=True, base_url="u", api_key="k", model="m",
+            timeout_seconds=1, reasoning_effort="low",
+        ),
     )
     monkeypatch.setattr(
         "stt.reconciler.reconcile",

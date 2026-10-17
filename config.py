@@ -316,21 +316,29 @@ class ReconcileConfig:
     enabled: bool = field(
         default_factory=lambda: _env_bool("RECONCILE_ENABLED", True)
     )
+    # DeepSeek's own API. The free SenseNova route answered "429 Server is
+    # busy" often enough that a ten-minute session waited twenty minutes for a
+    # review, and an unreviewed transcript that arrives is worth more than a
+    # reviewed one that does not.
     model: str = field(
-        default_factory=lambda: _env_str(
-            "RECONCILE_MODEL", "sensenova-6.8-flash-lite"
-        )
+        default_factory=lambda: _env_str("RECONCILE_MODEL", "deepseek-flash")
     )
     base_url: str = field(
         default_factory=lambda: _env_str(
-            "SENSENOVA_BASE_URL", "https://token.sensenova.ai/v1"
+            "RECONCILE_BASE_URL", "https://api.deepseek.com/v1"
         )
     )
     api_key: str = field(
-        default_factory=lambda: _env_str("SENSENOVA_API_KEY", "")
+        default_factory=lambda: _env_str("RECONCILE_API_KEY", "")
     )
+    # Choosing between two given readings is judgement, not a hard problem, so
+    # the cheapest reasoning is the right amount of it.
+    reasoning_effort: str = field(
+        default_factory=lambda: _env_str("RECONCILE_REASONING", "low")
+    )
+    # Per call, not per pass. A batch of eight answers in seconds when healthy.
     timeout_seconds: float = field(
-        default_factory=lambda: _env_float("RECONCILE_TIMEOUT", 180.0)
+        default_factory=lambda: _env_float("RECONCILE_TIMEOUT", 75.0)
     )
 
 

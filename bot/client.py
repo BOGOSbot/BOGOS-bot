@@ -728,6 +728,7 @@ class STTBot:
                     reconcile_cfg.model,
                     reconcile_cfg.timeout_seconds,
                     notice,
+                    reconcile_cfg.reasoning_effort,
                 )
                 replacements = settled.replacements
                 if settled.error:
