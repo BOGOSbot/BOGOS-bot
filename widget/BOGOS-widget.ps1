@@ -22,6 +22,26 @@ $errFile = Join-Path $root 'bot.err.log'
 $stateFile = Join-Path $PSScriptRoot 'widget-state.json'
 # Shared with recording.py, which derives the same path from its own location.
 $recordingFile = Join-Path $root 'recording.json'
+# The bot publishes what it is doing; the widget only reads it. A file rather
+# than an endpoint because both run on this machine and neither should need a
+# port open to know about the other.
+$statusFile = Join-Path $root 'status.json'
+
+function Get-BotState {
+    # sleeping -> listening (!transcript) -> emptying -> reconciling (!stop) -> sleeping
+    $map = @{
+        sleeping    = 'Sleeping'
+        listening   = 'Listening'
+        emptying    = 'Emptying queue'
+        reconciling = 'Reconciling'
+    }
+    if (-not (Test-Path $statusFile)) { return $map['sleeping'] }
+    try {
+        $j = Get-Content $statusFile -Raw | ConvertFrom-Json
+        if ($j -and $map.ContainsKey([string]$j.state)) { return $map[[string]$j.state] }
+    } catch { }
+    return $map['sleeping']
+}
 
 function Get-BotProcess {
     # The bot is a python process running main.py. Nothing in this script's own
@@ -236,8 +256,11 @@ $refresh = {
     if ($proc) {
         $up = (Get-Date) - $proc.CreationDate
         $uptime = if ($up.TotalHours -ge 1) { '{0}h{1:d2}' -f [int]$up.TotalHours, $up.Minutes } else { '{0}m{1:d2}s' -f $up.Minutes, $up.Seconds }
-        $dot.BackColor = $green
-        $status.Text = 'Running for ' + $uptime
+        $state = Get-BotState
+        # Green while it is doing something, muted while it waits for the next
+        # command: the colour answers "is it busy" without reading the words.
+        if ($state -eq 'Sleeping') { $dot.BackColor = $grey } else { $dot.BackColor = $green }
+        $status.Text = $state + '  ·  up ' + $uptime
         $toggle.Text = 'Stop'
         $toggle.FlatAppearance.MouseOverBackColor = $red
     } else {

@@ -41,6 +41,24 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+STATUS_FILE = Path(__file__).resolve().parents[1] / "status.json"
+
+
+def write_state(state: str) -> None:
+    """Publish what the bot is doing, for the widget to display.
+
+    Kept as a file rather than an endpoint: the widget is a separate process on
+    the same machine, and a file survives a widget restart, costs nothing to
+    read, and cannot be reached from off the machine.
+    """
+    try:
+        STATUS_FILE.write_text(
+            json.dumps({"state": state, "at": time.time()}), encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.warning("Could not write the status file: %s", exc)
+
+
 def _short_model(model: str) -> str:
     """mistralai/voxtral-small-24b-2507-stt -> voxtral, for a readable label."""
     tail = (model or "").rsplit("/", 1)[-1]
@@ -105,6 +123,7 @@ class STTBot:
         if not discord_cfg.token:
             logger.critical("DISCORD_TOKEN is not set. Aborting.")
             return
+        write_state("sleeping")
         self._bot.run(discord_cfg.token, log_handler=None)
 
     # -- events ------------------------------------
@@ -282,6 +301,7 @@ class STTBot:
                 f"Listening in **{voice_channel}**. "
                 f"Use {discord_cfg.command_prefix}stop to finish."
             )
+            write_state("listening")
             logger.info("Transcribing %s into #%s", voice_channel, target)
 
         @bot.command(name="stop", aliases=["leave", "disconnect"])
@@ -295,7 +315,9 @@ class STTBot:
             self._drained.clear()
             self._send_command("FLUSH_ALL", None)
             await ctx.send("Stopped listening. Finishing the queued speech.")
+            write_state("emptying")
             await self._await_drain()
+            write_state("reconciling")
             await ctx.voice_client.disconnect()
             await self._post_corrections()
             await self._close_session()
@@ -605,6 +627,7 @@ class STTBot:
         self._session_started_at = None
 
         if channel is None:
+            write_state("sleeping")
             logger.warning("No channel to post the session to: it is lost.")
             return
 
@@ -619,6 +642,7 @@ class STTBot:
                 )
             except discord.HTTPException as exc:
                 logger.error("Could not post the empty-session notice: %s", exc)
+            write_state("sleeping")
             return
 
         stamp = (started or datetime.now(timezone.utc)).astimezone()
@@ -634,15 +658,18 @@ class STTBot:
         await self._post_transcript(channel, first, mechanical, entries, reviewed=False)
 
         lines = await asyncio.to_thread(
-            self._reconcile, entries, self._retry_notice(channel)
+            self._reconcile,
+            entries,
+            self._retry_notice(channel, asyncio.get_running_loop()),
         )
         if lines != mechanical:
             second = self._save_session(entries, lines, stamp, reviewed=True)
             await self._post_transcript(
                 channel, second, lines, entries, reviewed=True
             )
+        write_state("sleeping")
 
-    def _retry_notice(self, channel):
+    def _retry_notice(self, channel, loop):
         """A one-off message when the endpoint makes the transcript late.
 
         The pass retries until it answers, so nothing is lost, but silence while
@@ -667,8 +694,9 @@ class STTBot:
                     logger.error("Could not post the retry notice: %s", exc)
 
             # Called from the worker thread, so the coroutine is handed back to
-            # the loop the bot is running on.
-            asyncio.run_coroutine_threadsafe(announce(), self.loop)
+            # the loop the bot is running on. Discord's client has no .loop in
+            # this version, which is why the first notice never arrived.
+            asyncio.run_coroutine_threadsafe(announce(), loop)
 
         return notice
 

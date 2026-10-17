@@ -95,7 +95,10 @@ BATCH = 8
 # normal operation, not a failure path, and a batch is retried until it answers.
 # The cost of waiting is a delay the channel is told about; the cost of giving up
 # would be a transcript nobody reviewed.
+# The free tier answers "429 Server is busy" under load, and a short fixed wait
+# keeps it busy. The wait doubles up to a ceiling instead.
 BACKOFF = 3.0
+BACKOFF_MAX = 30.0
 
 
 def reconcile(
@@ -130,7 +133,7 @@ def reconcile(
                     on_retry(result.error, attempt)
                 except Exception as exc:  # a notice must never kill the retry
                     logger.warning("Retry notice failed: %s", exc)
-            time.sleep(BACKOFF)
+            time.sleep(min(BACKOFF * (2 ** (attempt - 1)), BACKOFF_MAX))
     return Reconciled(replacements=merged)
 
 

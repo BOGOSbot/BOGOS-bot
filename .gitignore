@@ -32,3 +32,6 @@ widget-state.json
 
 # The widget's recording switch, local to this machine.
 recording.json
+
+# Live state for the widget; machine-local, never committed.
+status.json
