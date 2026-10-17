@@ -525,6 +525,8 @@ class STTBot:
             )
 
     async def _finalize_after_disconnect(self) -> None:
+        if self._transcript_channel is None:
+            return  # the stop command already closed this session
         await self._await_drain()
         await self._post_corrections()
         await self._close_session()
@@ -620,8 +622,15 @@ class STTBot:
             return
 
         stamp = (started or datetime.now(timezone.utc)).astimezone()
+        # Write the mechanical transcript first. The reconciler is a network
+        # call that can stall, and the file must not depend on it: if the model
+        # never answers, the session is already on disk and the brackets stand.
+        mechanical = [f"**{entry['name']}** : {entry['body']}" for entry in entries]
+        path = self._save_session(entries, mechanical, stamp)
+
         lines = await asyncio.to_thread(self._reconcile, entries)
-        path = self._save_session(entries, lines, stamp)
+        if lines != mechanical:
+            path = self._save_session(entries, lines, stamp) or path
         await self._post_transcript(channel, path, lines, entries)
 
     def _reconcile(self, entries: list[dict]) -> list[str]:

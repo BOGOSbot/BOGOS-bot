@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -86,7 +87,13 @@ def _payload(model: str, numbered: list[str]) -> dict:
 # Measured on this endpoint: about five seconds per line. Twelve lines keeps a
 # call near a minute, which is short enough that one slow batch cannot eat the
 # whole session budget.
-BATCH = 12
+BATCH = 8
+
+# The endpoint is intermittent: a small batch answers in ten seconds, and the
+# same size occasionally stalls past a minute. A per-call timeout alone lets one
+# stalled batch cost the whole transcript, because the post waits for every
+# batch to finish, so the pass has a deadline as well and gives up on the rest.
+BUDGET = 300.0
 
 
 def reconcile(
@@ -94,25 +101,33 @@ def reconcile(
     base_url: str,
     api_key: str,
     model: str,
-    timeout: float = 180.0,
+    timeout: float = 75.0,
+    budget: float = BUDGET,
 ) -> Reconciled:
     """Settle the disputed lines, in batches small enough to answer."""
-    if len(numbered) <= BATCH:
-        return _once(numbered, base_url, api_key, model, timeout)
+    deadline = time.monotonic() + budget
     merged: dict[int, str] = {}
+    left_over = 0
     for start in range(0, len(numbered), BATCH):
         part = numbered[start:start + BATCH]
-        result = _once(part, base_url, api_key, model, timeout)
-        if result.error:
-            # One stall should cost one batch, not the session. Measured on this
-            # endpoint, a batch sometimes hangs past its timeout and answers
-            # normally on the retry.
-            result = _once(part, base_url, api_key, model, timeout)
+        remaining = deadline - time.monotonic()
+        if remaining < 15:
+            left_over = len(numbered) - start
+            break
+        result = _once(part, base_url, api_key, model, min(timeout, remaining))
+        if result.error and deadline - time.monotonic() > 20:
+            result = _once(
+                part, base_url, api_key, model, min(timeout, deadline - time.monotonic())
+            )
         merged.update(result.replacements)
         if result.error:
             logger.warning(
                 "Gave up on %d line(s) at %d: %s", len(part), start, result.error
             )
+    if left_over:
+        logger.warning(
+            "Reconciliation budget spent; %d line(s) stay disputed.", left_over
+        )
     return Reconciled(replacements=merged)
 
 
