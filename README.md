@@ -15,7 +15,7 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 ## How transcription works
 
 Not real time, and not per utterance. Silero VAD cuts each speaker's speech, the
-pieces accumulate in a per-speaker buffer, and the moment that buffer holds five
+pieces accumulate in a per-speaker buffer, and the moment that buffer holds two
 minutes it is sent to the model in one request. A whole chunk gives the model the
 context that makes it spell the game's proper nouns the way the table did; a
 sentence at a time it guesses, which is what "battle shop" was.
@@ -34,12 +34,25 @@ one's first. Every chunk carries the time its first utterance arrived, so the
 session is sorted back into that order before the file is written and the
 channel is posted to.
 
-The size is set by the provider, not by preference: a request body is capped at
-20 MB and base64 inflates by a third, so 16 kHz mono tops out near 7.8 minutes.
-Five minutes encodes to 12.8 MB.
+The hard ceiling is the provider's: a request body is capped at 20 MB and base64
+inflates by a third, so 16 kHz mono tops out near 7.8 minutes. The right size is
+much smaller, and that was measured, not assumed. Over the same 195-dump session
+at four targets, the five-minute chunk dropped a 359-word exchange that every
+smaller size recovered, and recovered fewer proper nouns besides:
+
+| target | chunks | words | words/s | $/h of speech |
+|---|---|---|---|---|
+| 30 s | 28 | 2,425 | 2.57 | $0.148 |
+| 60 s | 16 | 2,322 | 2.45 | $0.140 |
+| **120 s** | **9** | **2,487** | **2.62** | $0.145 |
+| 300 s | 5 | 1,970 | 2.07 | $0.100 |
+
+Two minutes is the pick: the most words, no chunk the completeness guard had to
+give up on, and about 45% more per hour than five minutes buys the difference
+between a transcript and most of one.
 
 ```
-audio -> VAD -> per-speaker buffer -> 5-minute chunk -> model -> channel
+audio -> VAD -> per-speaker buffer -> 2-minute chunk -> model -> channel
 ```
 
 ### Two ways the model drops content, and what stops them

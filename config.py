@@ -182,12 +182,18 @@ class STTConfig:
     #
     # Chunked transcription. One request per chunk of speech, sent as soon as
     # the chunk is full, so a long session is settled as it runs instead of in
-    # one wait at the end. Five minutes of 16 kHz mono encodes to 12.8 MB, and
-    # the provider refuses a request body over 20 MB, so the ceiling is about
-    # 7.8 minutes; 300 seconds leaves room and still gives the model a whole
-    # exchange to read rather than a sentence.
+    # one wait at the end. The provider refuses a request body over 20 MB and
+    # base64 inflates by a third, so five minutes of 16 kHz mono encodes to
+    # 12.8 MB and the hard ceiling is about 7.8 minutes. The ceiling is not the
+    # right size, though: measured over
+    # the 195-dump session at 30/60/120/300s, the five-minute chunk dropped a
+    # 359-word exchange that every smaller size recovered, and recovered fewer
+    # proper nouns besides. 120s read back 2,487 words against 1,970, with no
+    # chunk the completeness guard had to give up on. It costs about 45% more
+    # per hour of speech -- $0.145 against $0.100 -- and buys the difference
+    # between a transcript and most of one.
     chunk_seconds: float = field(
-        default_factory=lambda: _env_float("STT_CHUNK_SECONDS", 300.0)
+        default_factory=lambda: _env_float("STT_CHUNK_SECONDS", 120.0)
     )
     chunk_max_seconds: float = field(
         default_factory=lambda: _env_float("STT_CHUNK_MAX_SECONDS", 450.0)
