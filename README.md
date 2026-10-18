@@ -85,10 +85,28 @@ That same chunk gives 157 words in halves, including the passage that was
 missing. The seam can lose a word or two where the halves meet; a lost word at
 a join beats a lost paragraph.
 
-The model's paragraphing is unreliable too — sometimes one line per utterance,
-sometimes one paragraph for a whole chunk. When it hands back a wall it is
-regrouped at sentence ends into blocks of about 80 words, which is what the
-one-minute chunks produce naturally. Decimals and initials are left alone.
+### The paragraphing is put back from the audio
+
+The model's paragraphing is unreliable: sometimes one line per utterance,
+sometimes one paragraph for a whole chunk. Nothing in the text says where the
+utterances began, so it cannot be recovered by reading it.
+
+It does not have to be. The chunker glued the utterances together with 0.4
+seconds of digital silence, and those runs are still in the PCM — so
+`utterance_seconds()` reads the boundaries back out of the audio the model was
+given, and a wall is cut along them. Breaks land on sentence ends, chosen so the
+running share of the words reaches the running share of the seconds. Nothing is
+rewritten and no word moves; a chunk that came back as one slab comes back as
+seven blocks where the speaker actually paused.
+
+Asking the model instead does not work. Sending the utterances as separate audio
+parts makes it emit exactly one item per part — 8 for 8, 30 for 30 — but the
+short segments lose content (57 words for 50 seconds against ~150 for the same
+audio in one piece). Asking for a count in the prompt is a request, not a
+guarantee: 8 of 8 for one speaker, 16 of 30 for another. And asking it to label
+who is speaking does not hold either: given two speakers taking turns it
+returned the right alternation with the names swapped, which is worse than no
+labels. That is why chunks stay per speaker and the speaker is never guessed.
 
 The model is `google/gemini-2.5-flash`, not the lite tier. Measured on two
 recordings of one speaker, lite lost the content of four of six shapings of the

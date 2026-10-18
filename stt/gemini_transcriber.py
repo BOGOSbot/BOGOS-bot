@@ -77,6 +77,14 @@ _SENTENCE_END = re.compile(
 # at 617 and read as one slab.
 WALL_BLOCK_WORDS = 80
 
+# The chunker glues utterances together with 0.4s of digital silence, so the
+# boundaries it used are still in the PCM. Anything at least this long is one of
+# those gaps rather than a pause inside a word.
+GAP_SECONDS = 0.3
+
+# A paragraph shorter than this is an interjection, not a paragraph.
+MIN_BLOCK_SECONDS = 8.0
+
 
 def looks_complete(text: str, seconds: float) -> bool:
     """Could this be a full reading of that much audio?"""
@@ -84,6 +92,90 @@ def looks_complete(text: str, seconds: float) -> bool:
     if not stripped or _TIMESTAMPS.match(stripped):
         return False
     return len(stripped.split()) >= max(MIN_WORDS, MIN_WORDS_PER_SECOND * seconds)
+
+
+def utterance_seconds(pcm: bytes) -> list[float]:
+    """How long each utterance in the chunk was, read back out of the audio.
+
+    The chunker wrote a run of digital silence between every pair of
+    utterances. Those runs are still there, so the boundaries the model was
+    never told about can be recovered without the chunker having to pass them.
+    """
+    frame = audio_cfg.sample_width
+    rate = audio_cfg.output_sample_rate
+    gap = int(GAP_SECONDS * rate) * frame
+    silences, run = [], 0
+    for offset in range(0, len(pcm) - frame + 1, frame):
+        if pcm[offset:offset + frame] == b"\x00\x00":
+            run += frame
+            continue
+        if run >= gap:
+            silences.append((offset - run, offset))
+        run = 0
+    if run >= gap:
+        silences.append((len(pcm) - run, len(pcm)))
+
+    out, start = [], 0
+    for opened, closed in silences:
+        if opened > start:
+            out.append((opened - start) / (rate * frame))
+        start = closed
+    if len(pcm) > start:
+        out.append((len(pcm) - start) / (rate * frame))
+    return [seconds for seconds in out if seconds > 0]
+
+
+def _blocks_by_time(text: str, durations: list[float]) -> str:
+    """Put the breaks where the speaker actually paused.
+
+    A wall of text and a list of how long each utterance took are enough to
+    line the two up: walk the sentences, and cut where the running share of the
+    words reaches the running share of the seconds. Snapped to sentence ends,
+    so nothing is cut in half, and lossless, so no word moves.
+    """
+    groups, current = [], 0.0
+    for seconds in durations:
+        current += seconds
+        if current >= MIN_BLOCK_SECONDS:
+            groups.append(current)
+            current = 0.0
+    if current:
+        if groups:
+            groups[-1] += current
+        else:
+            groups.append(current)
+    if len(groups) < 2:
+        return ""
+
+    sentences = [s.strip() for s in _SENTENCE_END.sub(r"\1\n", text).split("\n") if s.strip()]
+    if len(sentences) < 2:
+        return ""
+    counts = [len(s.split()) for s in sentences]
+    total = sum(counts)
+    if total == 0:
+        return ""
+
+    cuts, running = [], 0.0
+    for seconds in groups[:-1]:
+        running += seconds
+        cuts.append(running / sum(groups))
+
+    out, seen, index = [], 0, 0
+    for cut in cuts:
+        target = cut * total
+        while index < len(sentences) - 1 and seen + counts[index] < target:
+            seen += counts[index]
+            index += 1
+        if index + 1 < len(sentences) and index + 1 not in out:
+            out.append(index + 1)
+    if not out:
+        return ""
+
+    blocks, previous = [], 0
+    for stop in out + [len(sentences)]:
+        blocks.append(" ".join(sentences[previous:stop]))
+        previous = stop
+    return "\n\n".join(b for b in blocks if b)
 
 
 def _blocks(text: str) -> str:
@@ -101,20 +193,25 @@ def _blocks(text: str) -> str:
     return "\n\n".join(out)
 
 
-def tidy(text: str) -> str:
+def tidy(text: str, durations: list[float] | None = None) -> str:
     """Give back the paragraphing the model forgot.
 
     It usually separates utterances with a blank line and sometimes with a
     single newline, and sometimes with nothing at all: one paragraph for a
     whole chunk, which in Discord is a slab and in a file is worse. The first
-    two are the same transcript spelled differently; the third is regrouped at
-    sentence ends so the reader gets blocks instead of a wall.
+    two are the same transcript spelled differently. For the third, if the
+    caller knows how long each utterance ran, the breaks go where the speaker
+    actually paused; otherwise they go every 80 words.
     """
     body = re.sub(r"\n{3,}", "\n\n", text.strip())
     if "\n\n" in body:
         return body
     if body.count("\n") >= 3:
         return body.replace("\n", "\n\n")
+    if durations:
+        timed = _blocks_by_time(body, durations)
+        if timed:
+            return timed
     return _blocks(body)
 
 
@@ -281,7 +378,7 @@ class GeminiTranscriber:
             return None
 
         text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-        text = tidy(text or "")
+        text = tidy(text or "", utterance_seconds(pcm))
         usage = data.get("usage") or {}
         if not text:
             logger.warning(

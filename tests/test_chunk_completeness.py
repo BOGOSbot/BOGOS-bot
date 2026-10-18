@@ -8,6 +8,8 @@ here, and re-asked when it cannot be right.
 import queue
 import threading
 
+import pytest
+
 from config import audio_cfg, stt_cfg
 from stt.chunker import AudioChunker
 from stt.gemini_transcriber import (
@@ -15,6 +17,7 @@ from stt.gemini_transcriber import (
     _halves,
     looks_complete,
     tidy,
+    utterance_seconds,
 )
 from stt.processor import STTProcessor
 from stt.user_state import UserStateManager
@@ -77,6 +80,30 @@ def test_a_wall_becomes_blocks_instead_of_a_slab():
 
 def test_a_decimal_does_not_end_a_sentence():
     assert tidy("Il fait 3.7 puis 5.2 et c'est tout.") == "Il fait 3.7 puis 5.2 et c'est tout."
+
+
+def test_a_wall_breaks_where_the_speaker_paused():
+    """The chunker glued the utterances with silence; the boundaries are still
+    in the PCM, so the model's slab can be cut along them."""
+    text = " ".join(["Mot un. Mot deux. Mot trois."] * 20)   # 120 words, no breaks
+    durations = [10.0] * 12                                  # twelve utterances
+    out = tidy(text, durations)
+    assert out.count("\n\n") >= 5, "twelve utterances is not one paragraph"
+    assert " ".join(out.split()) == " ".join(text.split()), "and no word moved"
+
+
+def test_a_wall_with_no_timeline_still_gets_blocks():
+    text = " ".join(["Mot un. Mot deux. Mot trois."] * 20)
+    assert "\n\n" in tidy(text, [])
+
+
+def test_utterance_seconds_reads_the_chunker_gaps():
+    gap = b"\x00\x00" * int(0.4 * audio_cfg.output_sample_rate)
+    pcm = _pcm(3) + gap + _pcm(5) + gap + _pcm(2)
+    durations = utterance_seconds(pcm)
+    assert len(durations) == 3
+    assert durations[0] == pytest.approx(3.0, abs=0.05)
+    assert durations[1] == pytest.approx(5.0, abs=0.05)
 
 
 # -- the retry ----------------------------------------------------------------
