@@ -10,7 +10,12 @@ import threading
 
 from config import audio_cfg, stt_cfg
 from stt.chunker import AudioChunker
-from stt.gemini_transcriber import GeminiTranscriber, looks_complete, tidy
+from stt.gemini_transcriber import (
+    GeminiTranscriber,
+    _halves,
+    looks_complete,
+    tidy,
+)
 from stt.processor import STTProcessor
 from stt.user_state import UserStateManager
 
@@ -62,6 +67,18 @@ def test_existing_paragraphs_are_left_alone():
     assert tidy(body) == body
 
 
+def test_a_wall_becomes_blocks_instead_of_a_slab():
+    """Five-minute chunks came back as one 617-word paragraph."""
+    wall = " ".join(["Mot un. Mot deux. Mot trois. Mot quatre."] * 15)
+    out = tidy(wall)
+    assert "\n\n" in out, "a wall is not a paragraph"
+    assert max(len(b.split()) for b in out.split("\n\n")) <= 100
+
+
+def test_a_decimal_does_not_end_a_sentence():
+    assert tidy("Il fait 3.7 puis 5.2 et c'est tout.") == "Il fait 3.7 puis 5.2 et c'est tout."
+
+
 # -- the retry ----------------------------------------------------------------
 
 
@@ -97,13 +114,66 @@ def test_a_good_first_answer_is_not_re_asked():
 
 
 def test_the_longest_reading_is_kept_when_neither_attempt_is_complete():
+    """Below the split floor there is nothing left to try, so keep the best."""
     transcriber = GeminiTranscriber(model="test/model")
     answers = iter(["Ok.", "Ok, je vais faire ca."])
     transcriber._ask = lambda prompt, pcm: {
         "text": next(answers), "latency": 0.1, "cost": 0.0,
     }
-    result = transcriber.transcribe(1, _pcm(24.4))
+    result = transcriber.transcribe(1, _pcm(15))
     assert result["text"] == "Ok, je vais faire ca."
+
+
+# -- the split ----------------------------------------------------------------
+
+
+def _split_aware_ask(calls, whole_limit=40):
+    """Abandon anything longer than *whole_limit* seconds, answer the rest."""
+
+    def ask(prompt, pcm):
+        calls.append(pcm)
+        seconds = len(pcm) / BYTES_PER_SEC
+        if seconds > whole_limit:
+            return {"text": "Ok.", "latency": 0.1, "cost": 0.0}
+        return {"text": " ".join(["mot"] * 40), "latency": 0.1, "cost": 0.0}
+
+    return ask
+
+
+def test_an_abandoned_chunk_is_recovered_by_asking_about_its_halves():
+    """The same audio asked the same way stops in the same place.
+
+    Measured: a 74.5s chunk came back as 18 words twice over, and the same
+    audio in four pieces gave 180 words, including the passage that was
+    missing. Halving is a different question, and the model answers it.
+    """
+    transcriber = GeminiTranscriber(model="test/model")
+    calls = []
+    transcriber._ask = _split_aware_ask(calls)
+    result = transcriber.transcribe(1, _pcm(60))
+    assert result.get("split") is True
+    assert len(result["text"].split()) == 80, "two halves, forty words each"
+    assert len(calls) == 4, "two attempts at the whole, then one per half"
+
+
+def test_a_split_is_not_attempted_below_the_floor():
+    transcriber = GeminiTranscriber(model="test/model")
+    calls = []
+    transcriber._ask = _split_aware_ask(calls, whole_limit=1)
+    transcriber.transcribe(1, _pcm(15))
+    assert len(calls) == 2, "two attempts, no split: a fragment invites invention"
+
+
+def test_halves_split_at_silence_rather_than_through_a_word():
+    speech = _pcm(10)
+    silence = b"\x00\x00" * int(0.5 * audio_cfg.output_sample_rate)
+    left, right = _halves(speech + silence + _pcm(10))
+    assert len(speech) <= len(left) <= len(speech) + len(silence)
+
+
+def test_halves_fall_back_to_the_middle_when_there_is_no_silence():
+    left, right = _halves(_pcm(10))
+    assert len(left) == len(right)
 
 
 # -- the flush ---------------------------------------------------------------

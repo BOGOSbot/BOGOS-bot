@@ -15,8 +15,8 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 ## How transcription works
 
 Not real time, and not per utterance. Silero VAD cuts each speaker's speech, the
-pieces accumulate in a per-speaker buffer, and the moment that buffer holds two
-minutes it is sent to the model in one request. A whole chunk gives the model the
+pieces accumulate in a per-speaker buffer, and the moment that buffer holds one
+minute it is sent to the model in one request. A whole chunk gives the model the
 context that makes it spell the game's proper nouns the way the table did; a
 sentence at a time it guesses, which is what "battle shop" was.
 
@@ -37,22 +37,27 @@ channel is posted to.
 The hard ceiling is the provider's: a request body is capped at 20 MB and base64
 inflates by a third, so 16 kHz mono tops out near 7.8 minutes. The right size is
 much smaller, and that was measured, not assumed. Over the same 195-dump session
-at four targets, the five-minute chunk dropped a 359-word exchange that every
-smaller size recovered, and recovered fewer proper nouns besides:
+at four targets:
 
 | target | chunks | words | words/s | $/h of speech |
 |---|---|---|---|---|
 | 30 s | 28 | 2,425 | 2.57 | $0.148 |
-| 60 s | 16 | 2,322 | 2.45 | $0.140 |
-| **120 s** | **9** | **2,487** | **2.62** | $0.145 |
+| **60 s** | **16** | **2,463** | **2.60** | $0.149 |
+| 120 s | 9 | 2,490 | 2.62 | $0.145 |
 | 300 s | 5 | 1,970 | 2.07 | $0.100 |
 
-Two minutes is the pick: the most words, no chunk the completeness guard had to
-give up on, and about 45% more per hour than five minutes buys the difference
-between a transcript and most of one.
+Every size left a *different* passage missing — the five-minute run dropped 359
+words that all three smaller sizes recovered, and the one-minute run dropped a
+34-sentence stretch the others had. That is not a size problem, it is the model
+abandoning a chunk, and it is fixed below. Once it is, one minute and two are
+level on content (2,463 against 2,490), so the pick goes to the smaller chunk:
+a partial loss the density check cannot see is bounded by the chunk, and the
+five-minute run dropped 359 words while still reading at a healthy 2.16 words a
+second. Below 30 seconds the halves stop being utterances and the model starts
+inventing text.
 
 ```
-audio -> VAD -> per-speaker buffer -> 2-minute chunk -> model -> channel
+audio -> VAD -> per-speaker buffer -> 1-minute chunk -> model -> channel
 ```
 
 ### Two ways the model drops content, and what stops them
@@ -71,6 +76,19 @@ Both are caught in `stt/gemini_transcriber.py`, where the audio length is known:
 a reading under 0.8 words per second, or one that is nothing but timestamps, is
 re-asked once with a prompt that names the failure, and the longer of the two
 answers is kept either way.
+
+Re-asking the same audio usually fails, because the model stops in the same
+place: a 74.5-second chunk came back as 18 words twice over. So when both
+attempts are still too thin, the chunk is **split at the silence nearest its
+middle and each half is asked separately**, recursively, down to 20 seconds.
+That same chunk gives 157 words in halves, including the passage that was
+missing. The seam can lose a word or two where the halves meet; a lost word at
+a join beats a lost paragraph.
+
+The model's paragraphing is unreliable too — sometimes one line per utterance,
+sometimes one paragraph for a whole chunk. When it hands back a wall it is
+regrouped at sentence ends into blocks of about 80 words, which is what the
+one-minute chunks produce naturally. Decimals and initials are left alone.
 
 The model is `google/gemini-2.5-flash`, not the lite tier. Measured on two
 recordings of one speaker, lite lost the content of four of six shapings of the

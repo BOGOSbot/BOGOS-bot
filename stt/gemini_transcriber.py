@@ -8,11 +8,15 @@ writes what it heard instead, which on this session produced "battle shop".
 
 A chunk can come back as its opening sentence. The model reports finish_reason
 "stop" after six completion tokens and the rest of the audio is simply not
-written down; the lite tier did it to four of six shapings of two recordings,
-and which shapes it does it to is stable per input but not predictable from the
-audio. Nothing downstream can tell a six-word reading of five minutes from a
-quiet five minutes, so the reading is checked here, where the audio length is
-known, and re-asked when it cannot be right.
+written down. Which chunks it does that to is stable per input but not
+predictable from the audio, and it is not a size problem: sweeping the same
+195 dumps at 30, 60, 120 and 300 seconds left a different passage missing at
+each size, and every one of them was recovered by asking about part of the
+chunk instead. The same audio asked the same way stops in the same place.
+
+So the reading is checked here, where the audio length is known, and re-asked
+twice over: once with a prompt that says what to do rather than what not to do,
+and if that fails, in halves, recursively.
 """
 
 from __future__ import annotations
@@ -55,6 +59,24 @@ _TIMESTAMPS = re.compile(r"^(\d{1,2}:\d{2}\s*)+$")
 # one says what to do, which is the instruction the early stop ignores.
 RETRY_SUFFIX = " Transcribe every sentence, from the first word to the last."
 
+# Halving past this is not worth it: the halves stop being utterances and start
+# being fragments, and a fragment with no speech in it is what the model answers
+# with invented text.
+MIN_SPLIT_SECONDS = 20.0
+MAX_SPLIT_DEPTH = 3
+
+# Sentence ends, for putting the paragraphing back. Guarded so it does not fire
+# on a decimal ("3.7") or an initial ("M. Dupont"): a lower-case letter or a
+# digit before the stop, a capital after it.
+_SENTENCE_END = re.compile(
+    r"(?<=[a-z\u00e0-\u00f6\u00f8-\u00ff0-9])([.!?])\s+(?=[A-Z\u00c0-\u00d6\u00d8-\u00de])"
+)
+
+# What one block of transcript should weigh when the model hands back a wall.
+# 60-second chunks came back at 87 words a block and read well; five-minute ones
+# at 617 and read as one slab.
+WALL_BLOCK_WORDS = 80
+
 
 def looks_complete(text: str, seconds: float) -> bool:
     """Could this be a full reading of that much audio?"""
@@ -64,17 +86,63 @@ def looks_complete(text: str, seconds: float) -> bool:
     return len(stripped.split()) >= max(MIN_WORDS, MIN_WORDS_PER_SECOND * seconds)
 
 
+def _blocks(text: str) -> str:
+    """Regroup a wall of text into readable paragraphs at sentence ends."""
+    sentences = [s.strip() for s in _SENTENCE_END.sub(r"\1\n", text).split("\n") if s.strip()]
+    out, current, size = [], [], 0
+    for sentence in sentences:
+        current.append(sentence)
+        size += len(sentence.split())
+        if size >= WALL_BLOCK_WORDS:
+            out.append(" ".join(current))
+            current, size = [], 0
+    if current:
+        out.append(" ".join(current))
+    return "\n\n".join(out)
+
+
 def tidy(text: str) -> str:
     """Give back the paragraphing the model forgot.
 
     It usually separates utterances with a blank line and sometimes with a
-    single newline, which reads as one wall in Discord. Both are the same
-    transcript; make them look the same.
+    single newline, and sometimes with nothing at all: one paragraph for a
+    whole chunk, which in Discord is a slab and in a file is worse. The first
+    two are the same transcript spelled differently; the third is regrouped at
+    sentence ends so the reader gets blocks instead of a wall.
     """
     body = re.sub(r"\n{3,}", "\n\n", text.strip())
-    if "\n\n" not in body and body.count("\n") >= 3:
-        body = body.replace("\n", "\n\n")
-    return body
+    if "\n\n" in body:
+        return body
+    if body.count("\n") >= 3:
+        return body.replace("\n", "\n\n")
+    return _blocks(body)
+
+
+def _halves(pcm: bytes) -> tuple[bytes, bytes]:
+    """Split at the silence nearest the middle, so no word is cut in two.
+
+    The chunker puts 0.4s of silence between utterances; the middle of a chunk
+    is usually inside one of those gaps or inside a word. Prefer the gap.
+    """
+    frame = audio_cfg.sample_width
+    middle = (len(pcm) // 2) & ~1
+    window = int(0.2 * audio_cfg.output_sample_rate) * frame
+    best, best_gap = middle, 0
+    start = max(0, middle - int(15.0 * audio_cfg.output_sample_rate) * frame)
+    end = min(len(pcm), middle + int(15.0 * audio_cfg.output_sample_rate) * frame)
+    run = 0
+    for offset in range(start, end - frame, frame):
+        if pcm[offset:offset + frame] == b"\x00\x00":
+            run += frame
+            if run > best_gap:
+                best_gap = run
+                best = offset + frame
+        else:
+            run = 0
+    if best_gap < window:
+        best = middle
+    best &= ~1
+    return pcm[:best], pcm[best:]
 
 
 class GeminiTranscriber:
@@ -88,10 +156,55 @@ class GeminiTranscriber:
     def model(self) -> str:
         return self._model
 
-    def transcribe(self, user_id: int, pcm: bytes) -> dict[str, Any] | None:
+    def transcribe(
+        self, user_id: int, pcm: bytes, depth: int = 0
+    ) -> dict[str, Any] | None:
         seconds = len(pcm) / (
             audio_cfg.output_sample_rate * audio_cfg.sample_width
         )
+        best = self._read_until_complete(pcm, seconds)
+        if best is not None and looks_complete(best["text"], seconds):
+            return best
+
+        if depth >= MAX_SPLIT_DEPTH or seconds < MIN_SPLIT_SECONDS:
+            if best is not None:
+                logger.error(
+                    "Gave up completing a %.0fs chunk; keeping the longest "
+                    "reading, %d word(s).",
+                    seconds,
+                    len(best["text"].split()),
+                )
+            return best
+
+        started = time.perf_counter()
+        pieces = [
+            self.transcribe(user_id, half, depth + 1)
+            for half in _halves(pcm)
+        ]
+        pieces = [piece for piece in pieces if piece]
+        if not pieces:
+            return best
+
+        text = " ".join(piece["text"] for piece in pieces)
+        recovered = {
+            "text": text,
+            "latency": round(time.perf_counter() - started, 3),
+            "cost": sum(piece.get("cost") or 0.0 for piece in pieces),
+            "attempts": sum(piece.get("attempts") or 1 for piece in pieces),
+            "split": True,
+        }
+        if looks_complete(text, seconds) or best is None or len(text) > len(best["text"]):
+            logger.warning(
+                "Chunk of %.0fs was abandoned; recovered %d word(s) by asking "
+                "about its halves.",
+                seconds,
+                len(text.split()),
+            )
+            return recovered
+        return best
+
+    def _read_until_complete(self, pcm: bytes, seconds: float) -> dict[str, Any] | None:
+        """Ask the whole chunk, then ask it again differently."""
         attempts = max(1, stt_cfg.chunk_attempts)
         best: dict[str, Any] | None = None
 
@@ -114,16 +227,6 @@ class GeminiTranscriber:
                 attempt,
                 attempts,
                 result["text"][:70],
-            )
-
-        if best is not None:
-            best["attempts"] = attempts
-            logger.error(
-                "Gave up completing a %.0fs chunk after %d attempt(s); "
-                "keeping the longest reading, %d word(s).",
-                seconds,
-                attempts,
-                len(best["text"].split()),
             )
         return best
 

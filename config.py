@@ -190,10 +190,14 @@ class STTConfig:
     # 359-word exchange that every smaller size recovered, and recovered fewer
     # proper nouns besides. 120s read back 2,487 words against 1,970, with no
     # chunk the completeness guard had to give up on. It costs about 45% more
-    # per hour of speech -- $0.145 against $0.100 -- and buys the difference
-    # between a transcript and most of one.
+    # per hour of speech. One minute is the pick over two: the readings come
+    # out level once a chunk the model abandons is recovered by asking about
+    # its halves (2,463 words against 2,490), and a partial loss the density
+    # check cannot see -- the five-minute run dropped 359 words while still
+    # reading at 2.16 words a second -- is bounded by the chunk. Below 30s the
+    # halves stop being utterances and the model starts inventing.
     chunk_seconds: float = field(
-        default_factory=lambda: _env_float("STT_CHUNK_SECONDS", 120.0)
+        default_factory=lambda: _env_float("STT_CHUNK_SECONDS", 60.0)
     )
     chunk_max_seconds: float = field(
         default_factory=lambda: _env_float("STT_CHUNK_MAX_SECONDS", 450.0)
