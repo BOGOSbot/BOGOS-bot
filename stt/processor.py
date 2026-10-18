@@ -29,7 +29,7 @@ import numpy as np
 
 import recording
 from config import api_cfg, audio_cfg, process_cfg, stt_cfg, vad_cfg
-from stt import artifacts, conflicts
+from stt import artifacts
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -320,23 +320,27 @@ class STTProcessor:
                 if state:
                     self._flush_state(state, "leave")
             elif cmd == "FLUSH_ALL":
-                self._flush_all("flush-all")
+                self._flush_everything("flush-all")
                 self._request_drain()
             elif cmd == "SHUTDOWN":
                 logger.info("Received SHUTDOWN command.")
-                self._flush_all("shutdown")
+                self._flush_everything("shutdown")
                 self._await_backlog()
                 raise SystemExit(0)
 
-    def _process_audio(self) -> None:
-        """Pull one chunk from the audio queue and feed it through VAD."""
+    def _process_audio(self, timeout: float = 0.1) -> bool:
+        """Pull one chunk from the audio queue and feed it through VAD.
+
+        Returns whether an item was there, so a caller can tell a drained
+        queue from a slow one.
+        """
         try:
-            item = self._audio_q.get(timeout=0.1)
+            item = self._audio_q.get(timeout=timeout)
         except queue.Empty:
-            return
+            return False
         except Exception as exc:
             logger.error("Audio queue error: %s", exc)
-            return
+            return False
 
         # Accept both the sink's (id, name, pcm) triple and a bare (id, pcm).
         if len(item) == 3:
@@ -377,6 +381,43 @@ class STTProcessor:
                 if state.is_speaking:
                     self._enqueue(user_id, bytes(state.reset_speech()))
                 state.ring_buffer.append(frame)
+
+        return True
+
+    def _drain_audio(self) -> bool:
+        """Consume every frame the sink has already pushed. True if it moved.
+
+        The command loop reads the queue one item per turn, so a FLUSH_ALL can
+        arrive with audio still queued behind it.
+        """
+        moved = False
+        idle = 0
+        while idle < 3:
+            if self._process_audio(timeout=0.0):
+                moved = True
+                idle = 0
+            else:
+                idle += 1
+                time.sleep(0.02)
+        return moved
+
+    def _flush_everything(self, reason: str) -> None:
+        """Flush the speech the sink already pushed, not just what the VAD saw.
+
+        FLUSH_ALL is handled at the top of the loop, but frames the sink queued
+        after the processor's last read are still behind it. Flushing first
+        would leave them to be VAD'd into a chunker that had already been
+        emptied, and the drain signal would fire before those utterances
+        existed: the tail of the session would never be transcribed, and the
+        client would close the file without it. Draining first, then flushing,
+        then checking again, closes that window.
+        """
+        for _ in range(20):
+            moved = self._drain_audio()
+            self._flush_all(reason)
+            if not moved and self._audio_q.empty():
+                return
+        logger.warning("Flush settled with audio still arriving; not waiting.")
 
     def _flush_state(self, state, reason: str) -> None:
         """Hand any buffered speech to a worker before dropping a state."""

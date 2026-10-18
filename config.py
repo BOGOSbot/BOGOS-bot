@@ -195,9 +195,17 @@ class STTConfig:
     chunk_gap_seconds: float = field(
         default_factory=lambda: _env_float("STT_CHUNK_GAP_SECONDS", 0.4)
     )
+    # Not the lite tier. Measured on two recordings of the same speaker, the
+    # lite model answers a chunk with its opening sentence and stops --
+    # finish_reason "stop", 2 to 7 completion tokens -- and which chunks it
+    # does that to is deterministic per input but unpredictable: the same 24s
+    # of audio read back as 61 words unlevelled, 1 word levelled, and 5 words
+    # levelled in two parts. Four of six shapings lost their content; flash
+    # and pro lost none. A session that is silently 30% short is worse than
+    # one that costs three times as much.
     chunk_model: str = field(
         default_factory=lambda: _env_str(
-            "STT_CHUNK_MODEL", "google/gemini-2.5-flash-lite"
+            "STT_CHUNK_MODEL", "google/gemini-2.5-flash"
         )
     )
     chunk_max_tokens: int = field(
@@ -205,6 +213,12 @@ class STTConfig:
     )
     chunk_timeout_seconds: float = field(
         default_factory=lambda: _env_float("STT_CHUNK_TIMEOUT", 600.0)
+    )
+    # A chunk that reads back far thinner than the audio can hold was not
+    # transcribed, it was abandoned. Re-ask once with a prompt that names the
+    # failure; keep the longer of the two answers either way.
+    chunk_attempts: int = field(
+        default_factory=lambda: _env_int("STT_CHUNK_ATTEMPTS", 2)
     )
     # Audio arrives as audio; the prompt is the only place the model can learn
     # what it is listening to, and naming the game is what makes it spell the

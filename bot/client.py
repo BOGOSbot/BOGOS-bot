@@ -714,20 +714,17 @@ class STTBot:
         lines: list[str],
         stamp: datetime,
     ) -> Path | None:
-        """Keep the reconciled text and the two readings it came from."""
+        """Write the session's chunks, one block per chunk, with their metadata."""
         try:
             out_dir = Path(transcript_cfg.save_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
             stem = f"transcription-{stamp:%Y-%m-%d-%H%M}"
-            # No counts line. The brackets are visible in the body, so the
-            # tally told the reader nothing they could not see, and it was
-            # wrong for a while besides. Blank lines between entries are what
-            # matter here: Discord renders markdown, and consecutive lines
-            # with nothing between them collapse into a single paragraph.
+            # No counts line and no legend: one model read this, so there is
+            # nothing to explain. Blank lines between entries are what matter
+            # here: Discord renders markdown, and consecutive lines with
+            # nothing between them collapse into a single paragraph.
             (out_dir / f"{stem}.md").write_text(
                 f"# Transcription \u2014 {stamp:%Y-%m-%d %H:%M}\n\n"
-                "A bracket marks where the two models heard different words, "
-                "and \u2205 means one heard nothing there.\n\n"
                 + "\n\n".join(lines)
                 + "\n",
                 encoding="utf-8",
