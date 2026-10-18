@@ -49,3 +49,27 @@ def test_flush_returns_what_is_still_buffered():
 
 def test_an_empty_flush_is_empty():
     assert AudioChunker(300, 450).flush() == []
+
+
+def test_a_chunk_is_cut_when_it_spans_too_much_time():
+    """Measured: 17s of speech spread over 482s of wall clock, read as one moment.
+
+    Someone talking intermittently keeps the buffer open for minutes. A chunk
+    is bounded by audio, and audio is not time.
+    """
+    chunker = AudioChunker(target_seconds=60, max_seconds=450, max_span_seconds=90)
+    assert chunker.add(1, _pcm(10), started_at=1000.0) is None
+    assert chunker.add(1, _pcm(10), started_at=1030.0) is None
+    chunk = chunker.add(1, _pcm(10), started_at=1095.0)
+    assert chunk is not None, "95 seconds is past the span"
+    assert chunk.seconds < 60, "and it was nowhere near full"
+    assert chunk.utterances == 2, (
+        "the utterance that tripped the span opens the next chunk; appending "
+        "it first would put the very gap being excluded inside the chunk"
+    )
+
+
+def test_no_span_cap_leaves_the_chunk_alone():
+    chunker = AudioChunker(target_seconds=60, max_seconds=450)
+    chunker.add(1, _pcm(10), started_at=1000.0)
+    assert chunker.add(1, _pcm(10), started_at=100000.0) is None

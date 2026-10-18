@@ -60,6 +60,18 @@ inventing text.
 audio -> VAD -> per-speaker buffer -> 1-minute chunk -> model -> channel
 ```
 
+A chunk also closes when the next utterance arrives more than 90 seconds after
+its first. Without that, a chunk is bounded by audio accumulated, and audio is
+not time: an intermittent speaker keeps the buffer open for minutes. On the 21:11
+session one chunk held 17 seconds of speech spread over 482 seconds of wall
+clock — three utterances said eight minutes apart, glued with 0.4 seconds of
+silence and transcribed as one moment. Bounding the span took that session from
+12 chunks with a 482-second worst span to 18 with an 87-second one.
+
+The utterance that trips the check opens the next chunk rather than joining the
+one it just exceeded, which is what makes the bound hold — appending it first
+and flushing after would leave the very gap being excluded inside the chunk.
+
 ### Two ways the model drops content, and what stops them
 
 A chunk can come back as its opening sentence. The model reports

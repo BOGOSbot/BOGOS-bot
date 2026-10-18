@@ -67,9 +67,22 @@ class AudioChunker:
     settled as they arrive, not one wait at the end.
     """
 
-    def __init__(self, target_seconds: float, max_seconds: float) -> None:
+    def __init__(
+        self,
+        target_seconds: float,
+        max_seconds: float,
+        max_span_seconds: float = 0.0,
+    ) -> None:
         self._target = max(target_seconds, 10.0)
         self._max = max(max_seconds, self._target)
+        # A chunk is bounded by audio, but audio is not time. Someone talking
+        # intermittently keeps the buffer open for minutes: on the 21:11
+        # session one chunk held 17 seconds of speech spread over 482 seconds
+        # of wall clock, so three utterances said eight minutes apart were
+        # transcribed as one moment. Cap the span as well, and a chunk becomes
+        # what was said in a stretch of conversation rather than a pile of
+        # things said whenever.
+        self._max_span = max_span_seconds
         self._pending: dict[int, _Pending] = {}
         self._next_seq = 1
 
@@ -80,18 +93,47 @@ class AudioChunker:
         seconds = len(pcm) / (
             audio_cfg.output_sample_rate * audio_cfg.sample_width
         )
-        state = self._pending.setdefault(
-            user_id, _Pending(seq=self._next_seq, started_at=started_at)
-        )
+        state = self._pending.get(user_id)
+        finished: Chunk | None = None
+        if state is None:
+            state = self._pending[user_id] = _Pending(
+                seq=self._next_seq, started_at=started_at
+            )
+        elif (
+            self._max_span > 0
+            and started_at
+            and state.started_at
+            and started_at - state.started_at >= self._max_span
+        ):
+            # This utterance is too far from the ones already buffered to belong
+            # with them, so it opens the next chunk instead of joining this one.
+            # Appending first and flushing after would let the gap that tripped
+            # the check sit inside the chunk it was meant to exclude.
+            logger.info(
+                "Chunk reached its %.0fs span on %d utterance(s) before it was "
+                "full (%.0fs of audio).",
+                self._max_span,
+                state.utterances,
+                state.seconds,
+            )
+            finished = self._take(user_id)
+            state = self._pending[user_id] = _Pending(
+                seq=self._next_seq, started_at=started_at
+            )
+
         if state.utterances:
             state.parts.append(_silence(stt_cfg.chunk_gap_seconds))
             state.seconds += stt_cfg.chunk_gap_seconds
         state.parts.append(pcm)
         state.seconds += seconds
         state.utterances += 1
-        if state.seconds >= self._target:
+
+        # A chunk that was just opened holds one utterance, and the VAD never
+        # emits one long enough to fill a chunk on its own, so the two cannot
+        # both fire.
+        if finished is None and state.seconds >= self._target:
             return self._take(user_id)
-        return None
+        return finished
 
     def flush(self) -> list[Chunk]:
         """Everything still buffered, for a stop or a disconnect."""

@@ -202,6 +202,15 @@ class STTConfig:
     chunk_max_seconds: float = field(
         default_factory=lambda: _env_float("STT_CHUNK_MAX_SECONDS", 450.0)
     )
+    # A chunk is bounded by audio, but audio is not time. Someone talking
+    # intermittently keeps the buffer open for minutes: on the 21:11 session
+    # one chunk held 17 seconds of speech spread over 482 seconds of wall
+    # clock, and three utterances said eight minutes apart were transcribed as
+    # one moment. This caps the wall-clock span, so a chunk is what was said in
+    # a stretch of conversation. 0 disables it.
+    chunk_max_span_seconds: float = field(
+        default_factory=lambda: _env_float("STT_CHUNK_MAX_SPAN_SECONDS", 90.0)
+    )
     chunk_gap_seconds: float = field(
         default_factory=lambda: _env_float("STT_CHUNK_GAP_SECONDS", 0.4)
     )

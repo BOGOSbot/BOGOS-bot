@@ -99,7 +99,9 @@ class STTProcessor:
         from stt.chunker import AudioChunker
 
         self._chunker = AudioChunker(
-            stt_cfg.chunk_seconds, stt_cfg.chunk_max_seconds
+            stt_cfg.chunk_seconds,
+            stt_cfg.chunk_max_seconds,
+            stt_cfg.chunk_max_span_seconds,
         )
 
         self._users = UserStateManager(vad_iterator_factory=self._vad.create_iterator)
