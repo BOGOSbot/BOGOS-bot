@@ -36,6 +36,7 @@ from config import (
     process_cfg,
     transcript_cfg,
 )
+from stt import glossary
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -216,8 +217,13 @@ class STTBot:
         bot = self._bot
 
         @bot.command(name="transcript", aliases=["join", "start", "listen"])
-        async def cmd_transcript(ctx: commands.Context) -> None:
-            """Join your voice channel and post the transcript to a text channel."""
+        async def cmd_transcript(ctx: commands.Context, link: str = "") -> None:
+            """Join your voice channel and post the transcript to a text channel.
+
+            A pairing sheet link teaches it the team, player and army names
+            first, so the meeting's proper nouns are spelled the way the sheet
+            spells them rather than the way they sounded.
+            """
             if ctx.author.voice is None or ctx.author.voice.channel is None:
                 await ctx.send("❌ You are not in a voice channel.")
                 return
@@ -242,6 +248,25 @@ class STTBot:
             if already:
                 await ctx.send(f"Already listening in **{voice_channel}**.")
                 return
+
+            # The pairing sheet is read before dialling, so its names are in
+            # place for the first chunk rather than the second. A sheet that
+            # cannot be read is reported and the session runs without it: it is
+            # an improvement, not a requirement.
+            vocabulary = 0
+            if link.strip():
+                try:
+                    tabs, _skipped = pairing.collect(
+                        pairing.sheet_id_from(link.strip())
+                    )
+                except Exception as exc:
+                    logger.error("Could not read the pairing sheet: %s", exc)
+                    await ctx.send(f"Could not read that pairing sheet: {exc}")
+                    tabs = []
+                vocabulary = glossary.set_session_terms(pairing.vocabulary(tabs))
+            else:
+                # A link from an earlier session must not colour this one.
+                glossary.set_session_terms([])
 
             # Check permissions BEFORE dialling. Without Connect, Discord never
             # completes the voice handshake and discord.py raises a bare
@@ -318,8 +343,11 @@ class STTBot:
             self._drained.clear()
             self._note_activity()
 
+            learned = (
+                f" {vocabulary} name(s) from the pairing sheet." if vocabulary else ""
+            )
             await target.send(
-                f"Listening in **{voice_channel}**. "
+                f"Listening in **{voice_channel}**.{learned} "
                 f"Use {discord_cfg.command_prefix}stop to finish."
             )
             write_state("listening")
@@ -629,6 +657,7 @@ class STTBot:
         # Nothing heard after this belongs in the finished conversation, and the
         # next !transcript opens a folder of its own.
         recording.close_session()
+        glossary.set_session_terms([])
 
         self._transcript_channel = None
         self._session_lines = []

@@ -320,6 +320,37 @@ def collect(sheet_id: str) -> tuple[list[TabReport], list[str]]:
     return found, skipped
 
 
+def vocabulary(tabs: list[TabReport]) -> list[str]:
+    """Every name in the workbook a meeting would say out loud.
+
+    Three kinds, and they are the three a pre-tournament meeting is about: the
+    tab label is the opposing team, the Joueur cell is a player written
+    "Zed (Sam)" so both halves are names they answer to, and the Faction column
+    is the army they are bringing. All three are spelled somewhere, which is
+    exactly what a transcriber cannot guess.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        term = (value or "").strip()
+        key = term.casefold()
+        # Short cells are noise: "OK", "-", a stray initial.
+        if len(term) < 3 or key in seen:
+            return
+        seen.add(key)
+        found.append(term)
+
+    for entry in tabs:
+        add(entry.tab)
+        for player in entry.report.players:
+            pseudo, prenom = split_nickname(player.name)
+            add(pseudo)
+            add(prenom)
+            add(player.faction)
+    return found
+
+
 def _who(player: Player, resolver: Resolver) -> str:
     """A real ping when one can be resolved, and a plain bold name otherwise."""
     user_id = resolver.resolve(player.name)

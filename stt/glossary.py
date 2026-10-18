@@ -10,12 +10,16 @@ the meaning.
 Two plain text files, one term per line, read fresh before every request so an
 edit applies to the next chunk rather than the next restart:
 
-    glossary.txt        shipped with the repository
-    glossary.local.txt  the team's own, gitignored, optional
+    glossary.txt          shipped with the repository
+    glossary.local.txt    the team's own, gitignored, optional
+    glossary.session.txt  this conversation's, written by the bot from the
+                          pairing sheet at !transcript and cleared at !stop
 
-The second is for what does not belong in a public repository: their armies,
-their players, the venue, the gite. It is read after the first, so the shipped
-spelling wins a duplicate.
+The local list is for what does not belong in a public repository: their
+armies, their players, the venue, the gite. The session list is what the
+pairing sheet already knows - the teams, the players, the armies - so nobody
+has to type it. Both are read after the shipped list, so a spelling that is
+already known wins.
 
 Both are attached to every chunk, so their size is paid every time. The whole
 Warhammer 40,000 corpus behind [[mhq-parser]] is about 42,000 tokens, which is
@@ -30,6 +34,8 @@ glossary that invents them.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterable
 from pathlib import Path
 
 from config import stt_cfg
@@ -38,6 +44,8 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+SESSION_FILE = "glossary.session.txt"
 
 SPELLINGS = "\n\nSpell these names this way if you hear them: {terms}."
 
@@ -57,6 +65,16 @@ def _resolve(name: str) -> Path | None:
     return candidate if candidate.is_absolute() else ROOT / candidate
 
 
+def session_path() -> Path:
+    """The names for the conversation now running.
+
+    A file rather than a queue message, for the same reason live-session.json
+    is one: the transcription worker is a different process, and a list that can
+    be read afterwards is one that can be checked when a name comes back wrong.
+    """
+    return ROOT / SESSION_FILE
+
+
 def paths() -> list[Path]:
     """Every list to read, in order. Empty when the glossary is switched off."""
     return [
@@ -64,9 +82,47 @@ def paths() -> list[Path]:
         for found in (
             _resolve(stt_cfg.glossary_file),
             _resolve(stt_cfg.glossary_local_file),
+            session_path(),
         )
         if found is not None
     ]
+
+
+def _clean(terms: Iterable[str]) -> list[str]:
+    """Trimmed, in order, without repeats, and without cells too short to be a name."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for value in terms:
+        term = (value or "").strip()
+        key = term.casefold()
+        if len(term) < 3 or key in seen:
+            continue
+        seen.add(key)
+        found.append(term)
+    return found
+
+
+def set_session_terms(terms: Iterable[str]) -> int:
+    """Publish the names this conversation will use, and return how many.
+
+    Written when the session opens and cleared when it closes, so a name from
+    one tournament cannot colour the next. Empty clears it.
+    """
+    cleaned = _clean(terms)
+    path = session_path()
+    try:
+        if not cleaned:
+            path.unlink(missing_ok=True)
+            return 0
+        # Write beside it and replace: the worker reads this between chunks, and
+        # a half-written file would be read as a shorter list.
+        scratch = path.with_name(path.name + ".tmp")
+        scratch.write_text("\n".join(cleaned) + "\n", encoding="utf-8")
+        os.replace(scratch, path)
+    except OSError as exc:
+        logger.warning("Could not write %s: %s", path, exc)
+        return 0
+    return len(cleaned)
 
 
 def terms() -> list[str]:

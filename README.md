@@ -8,7 +8,7 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 
 | Command | What it does |
 |---|---|
-| `!transcript` | Joins your voice channel and starts listening |
+| `!transcript [pairing sheet link]` | Joins your voice channel and starts listening. With a link, it reads the teams, players and armies out of the sheet first and teaches them to the transcriber |
 | `!stop` | Finishes the queued speech and posts the transcript |
 | `!pairing <sheets link>` | Reports who still owes matchups or a list, per team tab |
 
@@ -152,6 +152,11 @@ Two things a naive list gets wrong. `Agamatus` only exists inside `Agamatus
 Custodians`, so a list of whole names contains no word of half of what is said.
 And `Eldar` is not in the corpus at all — 11th edition renamed it `Aeldari`,
 and every player still says the old one.
+
+A third list, `glossary.session.txt`, is written by the bot itself: `!transcript` with a
+pairing sheet link pulls the team names, the players and the Faction column out of
+the workbook, and `!stop` clears it. It is gitignored, and a session that is
+started without a link gets no session list rather than the last one's.
 
 Set `STT_GLOSSARY_FILE` or `STT_GLOSSARY_LOCAL_FILE` to another path, or empty to turn
 either off.

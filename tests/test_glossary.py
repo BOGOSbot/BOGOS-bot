@@ -14,50 +14,52 @@ def lists(tmp_path, monkeypatch):
     """A shipped list and a local overlay of our own, both by absolute path."""
     shipped = tmp_path / "glossary.txt"
     local = tmp_path / "glossary.local.txt"
+    session = tmp_path / "glossary.session.txt"
     monkeypatch.setattr(
         glossary,
         "stt_cfg",
         SimpleNamespace(glossary_file=str(shipped), glossary_local_file=str(local)),
     )
-    return shipped, local
+    monkeypatch.setattr(glossary, "session_path", lambda: session)
+    return shipped, local, session
 
 
 def test_blank_lines_and_comments_are_not_terms(lists):
-    shipped, _ = lists
+    shipped, _, _ = lists
     shipped.write_text("# a note\n\nAeldari\n   \n# another\nDrukhari\n", encoding="utf-8")
     assert glossary.terms() == ["Aeldari", "Drukhari"]
 
 
 def test_a_repeated_term_keeps_the_first_spelling(lists):
-    shipped, _ = lists
+    shipped, _, _ = lists
     shipped.write_text("Aeldari\nAELDARI\naeldari\nNecrons\n", encoding="utf-8")
     assert glossary.terms() == ["Aeldari", "Necrons"]
 
 
 def test_a_byte_order_mark_does_not_ride_into_the_first_term(lists):
     """Windows editors add one, and it would be sent to the model as text."""
-    shipped, _ = lists
+    shipped, _, _ = lists
     shipped.write_bytes("\ufeffAeldari\n".encode("utf-8"))
     assert glossary.terms() == ["Aeldari"]
 
 
 def test_the_local_list_is_read_after_the_shipped_one(lists):
     """The team's own armies and players do not belong in a public repository."""
-    shipped, local = lists
+    shipped, local, _ = lists
     shipped.write_text("Aeldari\nDrukhari\n", encoding="utf-8")
     local.write_text("Mandal\nLe Gite du Lac\n", encoding="utf-8")
     assert glossary.terms() == ["Aeldari", "Drukhari", "Mandal", "Le Gite du Lac"]
 
 
 def test_the_shipped_spelling_wins_a_duplicate(lists):
-    shipped, local = lists
+    shipped, local, _ = lists
     shipped.write_text("Aeldari\n", encoding="utf-8")
     local.write_text("AELDARI\nNecrons\n", encoding="utf-8")
     assert glossary.terms() == ["Aeldari", "Necrons"]
 
 
 def test_no_local_list_is_fine(lists):
-    shipped, _ = lists
+    shipped, _, _ = lists
     shipped.write_text("Aeldari\n", encoding="utf-8")
     assert glossary.terms() == ["Aeldari"]
 
@@ -73,7 +75,9 @@ def test_an_empty_setting_turns_it_off(monkeypatch):
         "stt_cfg",
         SimpleNamespace(glossary_file="", glossary_local_file=""),
     )
-    assert glossary.paths() == []
+    # The session list is always a path; it simply does not exist.
+    assert glossary.paths() == [glossary.session_path()]
+    assert glossary.terms() == []
     assert glossary.append_to("base") == "base"
 
 
@@ -83,11 +87,11 @@ def test_a_relative_name_resolves_against_the_project_root(monkeypatch):
         "stt_cfg",
         SimpleNamespace(glossary_file="glossary.txt", glossary_local_file=""),
     )
-    assert glossary.paths() == [glossary.ROOT / "glossary.txt"]
+    assert glossary.paths() == [glossary.ROOT / "glossary.txt", glossary.session_path()]
 
 
 def test_the_terms_reach_the_prompt_and_only_if_heard(lists):
-    shipped, _ = lists
+    shipped, _, _ = lists
     shipped.write_text("Aeldari\nDrukhari\n", encoding="utf-8")
     prompt = glossary.append_to("Transcribe this audio.")
 
@@ -98,7 +102,7 @@ def test_the_terms_reach_the_prompt_and_only_if_heard(lists):
 
 
 def test_a_glossary_that_grows_past_the_core_warns_once(lists, caplog):
-    shipped, _ = lists
+    shipped, _, _ = lists
     shipped.write_text("\n".join("Term%d" % n for n in range(1200)), encoding="utf-8")
     glossary._warned = False
 
@@ -126,3 +130,38 @@ def test_the_shipped_glossary_is_a_core_vocabulary():
     assert sum(len(t) for t in found) < glossary.WARN_CHARS
     for term in ("Warhammer 40,000", "Aeldari", "Eldar", "Drukhari", "Necrons", "pairing"):
         assert term in found
+
+
+def test_the_pairing_sheet_names_join_the_list(lists):
+    """What the bot learns at !transcript, and nobody has to type."""
+    shipped, _, session = lists
+    shipped.write_text("Aeldari\n", encoding="utf-8")
+
+    published = glossary.set_session_terms(["Les Chevaliers", "Mandal", "Necrons"])
+
+    assert published == 3
+    assert session.is_file()
+    assert glossary.terms() == ["Aeldari", "Les Chevaliers", "Mandal", "Necrons"]
+
+
+def test_the_shipped_spelling_still_wins_a_sheet_name(lists):
+    shipped, _, _ = lists
+    shipped.write_text("Necrons\n", encoding="utf-8")
+    glossary.set_session_terms(["NECRONS", "Mandal"])
+    assert glossary.terms() == ["Necrons", "Mandal"]
+
+
+def test_closing_the_session_forgets_the_sheet(lists):
+    """A name from one tournament must not colour the next."""
+    shipped, _, session = lists
+    shipped.write_text("Aeldari\n", encoding="utf-8")
+    glossary.set_session_terms(["Mandal"])
+
+    assert glossary.set_session_terms([]) == 0
+
+    assert not session.exists()
+    assert glossary.terms() == ["Aeldari"]
+
+
+def test_a_cell_too_short_to_be_a_name_is_dropped(lists):
+    assert glossary.set_session_terms(["OK", "-", "", "  ", "Mandal"]) == 1

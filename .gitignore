@@ -31,6 +31,10 @@ wrangler.toml.bak
 # glossary.txt carries the vocabulary that is the same for everybody.
 glossary.local.txt
 
+# The names the running conversation was taught from its pairing sheet. Written
+# at !transcript, cleared at !stop, meaningless outside that session.
+glossary.session.txt
+
 # Widget window position, local to this machine.
 widget-state.json
 

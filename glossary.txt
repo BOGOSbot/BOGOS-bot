@@ -75,10 +75,11 @@ Boyz
 Titans
 
 # -- a tournament week ------------------------------------------------------
-# English loanwords French players use as they are, the tools a list gets built
-# in, and what a tournament weekend runs on. Ordinary French is left out on
-# purpose: the model already spells "appariement" and "hebergement" correctly,
-# and a list that contains them invites it to write them where nobody said them.
+# Only what is actually said out loud. Ordinary French is left out on purpose:
+# the model already spells "appariement" and "hebergement" correctly, and a list
+# containing them invites it to write them where nobody said them. Brand names
+# are left out for the other reason - nobody says TGV or Revolut, they say the
+# train and the transfer - except the two that get used as common nouns.
 pairing
 matchup
 round
@@ -90,15 +91,7 @@ budget
 booking
 Airbnb
 BlaBlaCar
-SNCF
-OUIGO
-TGV
-PayPal
-Lydia
-Revolut
-BattleScribe
 New Recruit
-Best Coast Pairings
 
 # -- the table --------------------------------------------------------------
 # Only terms a French speaker would not otherwise produce. "Objective",

@@ -222,3 +222,44 @@ def test_a_full_nickname_in_the_sheet_still_matches() -> None:
 def test_normalize_ignores_spacing_around_parentheses() -> None:
     assert pairing.normalize("Zed (Sam)") == pairing.normalize("Zed(Sam)")
     assert pairing.normalize("Zed (Sam)") == pairing.normalize("Zed ( Sam )")
+
+
+# -- what the sheet teaches the transcriber -----------------------------------
+
+
+def test_the_workbook_names_are_the_teams_players_and_armies():
+    """A meeting is about exactly these three, and the sheet already spells them."""
+    report = pairing.Report(
+        players=[
+            pairing.Player(
+                name="Zed (Sam)", faction="Drukhari", avec=6, sans=0,
+                matchups_total=6, liste="OK",
+            ),
+            pairing.Player(
+                name="Fab", faction="Necrons", avec=0, sans=0,
+                matchups_total=6, liste="",
+            ),
+        ],
+        matchups_total=6,
+    )
+
+    assert pairing.vocabulary([pairing.TabReport("Yokai", report)]) == [
+        "Yokai", "Zed", "Sam", "Drukhari", "Fab", "Necrons",
+    ]
+
+
+def test_a_cell_too_short_to_be_a_name_is_dropped():
+    """Short cells are noise: "OK", a dash, a stray initial."""
+    report = pairing.Report(
+        players=[
+            pairing.Player(
+                name="OK", faction="-", avec=0, sans=0, matchups_total=6, liste="",
+            ),
+            pairing.Player(
+                name="Mandal", faction="", avec=0, sans=0, matchups_total=6, liste="",
+            ),
+        ],
+        matchups_total=6,
+    )
+
+    assert pairing.vocabulary([pairing.TabReport("A", report)]) == ["Mandal"]
