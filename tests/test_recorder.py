@@ -87,3 +87,14 @@ def test_close_is_idempotent(tmp_path) -> None:
     recorder.close()
     recorder.close()
     assert len(list(tmp_path.glob("session.json"))) == 1
+
+
+def test_the_index_is_utf8_so_an_accented_name_survives(tmp_path) -> None:
+    """The default encoding on Windows is ANSI; the file must still be JSON."""
+    recorder = ChannelRecorder(str(tmp_path))
+    recorder.write(2, "Zoé (Amélie)", b"\x00\x00")
+    recorder.close()
+
+    raw = (tmp_path / "session.json").read_bytes()
+    payload = json.loads(raw.decode("utf-8"))  # must not raise
+    assert payload["speakers"]["2"] == "Zoé (Amélie)"

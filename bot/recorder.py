@@ -107,5 +107,10 @@ class ChannelRecorder:
             "speakers": {str(uid): name for uid, name in self._names.items()},
         }
         path = self._root / "session.json"
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        # encoding, explicitly. The default is the ANSI codepage on Windows, so
+        # a display name with an accent wrote a byte no JSON reader can decode -
+        # and the file still called itself JSON.
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         logger.info("Recording index written: %s", path.name)
