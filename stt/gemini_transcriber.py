@@ -50,6 +50,11 @@ USER_AGENT = (
 MIN_WORDS_PER_SECOND = 0.8
 MIN_WORDS = 3
 
+# Under this, one word is a fair answer and the rate says nothing: a 2-second
+# clip that says "Salut." reads at 0.5 words a second and is complete. The
+# rate is only meaningful once there was room for more than a word.
+MIN_RATE_SECONDS = 10.0
+
 # A whole chunk answered with a clock is the other way this model fails: a
 # 300s chunk came back as "00:00" through "04:59", one label per second, and
 # not one word of speech.
@@ -91,6 +96,8 @@ def looks_complete(text: str, seconds: float) -> bool:
     stripped = text.strip()
     if not stripped or _TIMESTAMPS.match(stripped):
         return False
+    if seconds < MIN_RATE_SECONDS:
+        return True
     return len(stripped.split()) >= max(MIN_WORDS, MIN_WORDS_PER_SECOND * seconds)
 
 

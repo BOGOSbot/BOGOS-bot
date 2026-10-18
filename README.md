@@ -75,7 +75,8 @@ through `04:59`, one label per second, and no speech at all.
 Both are caught in `stt/gemini_transcriber.py`, where the audio length is known:
 a reading under 0.8 words per second, or one that is nothing but timestamps, is
 re-asked once with a prompt that names the failure, and the longer of the two
-answers is kept either way.
+answers is kept either way. The rate only applies above 10 seconds — a
+two-second clip that says one word is a complete reading of that clip.
 
 Re-asking the same audio usually fails, because the model stops in the same
 place: a 74.5-second chunk came back as 18 words twice over. So when both

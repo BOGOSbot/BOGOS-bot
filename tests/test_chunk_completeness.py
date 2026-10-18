@@ -57,6 +57,15 @@ def test_a_short_chunk_is_held_to_a_short_floor():
     assert looks_complete("Oui, c'est bon.", 2.0)
 
 
+def test_one_word_is_a_fair_reading_of_a_two_second_clip():
+    """Measured: a 1.8s chunk said "Salut." and the rate flagged it at 0.5 w/s."""
+    assert looks_complete("Salut.", 1.8)
+
+
+def test_a_long_chunk_is_still_held_to_the_rate():
+    assert not looks_complete("Ok.", 24.4)
+
+
 # -- the paragraphing --------------------------------------------------------
 
 
