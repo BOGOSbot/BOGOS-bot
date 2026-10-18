@@ -7,9 +7,13 @@ here, and re-asked when it cannot be right.
 
 import queue
 import threading
+import wave
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
+import recording
 from config import audio_cfg, stt_cfg
 from stt.chunker import AudioChunker
 from stt.gemini_transcriber import (
@@ -269,3 +273,42 @@ def test_flush_with_nothing_queued_is_a_no_op():
     processor = _bare_processor([])
     processor._flush_everything("flush-all")
     assert processor._utterances.qsize() == 0
+
+
+# -- where an utterance is filed ---------------------------------------------
+# The processor harness lives in this file, so the two tests that need one live
+# here too. What they pin belongs to recording.py: a dump lands in the running
+# conversation's folder, and nowhere at all when no conversation is open.
+
+
+@pytest.fixture
+def isolated_recording(tmp_path, monkeypatch):
+    """No developer recording.json, no environment, a session pointer of our own."""
+    monkeypatch.setattr(recording, "settings_path", lambda: tmp_path / "recording.json")
+    monkeypatch.setattr(recording, "session_path", lambda: tmp_path / "live-session.json")
+    monkeypatch.delenv("RECORD_DIR", raising=False)
+    monkeypatch.delenv("STT_DUMP_DIR", raising=False)
+    return tmp_path
+
+
+def test_a_dump_lands_in_the_running_conversations_folder(isolated_recording):
+    root = isolated_recording / "recordings"
+    session = recording.open_session(
+        recording.Choice(True, str(root), str(root), str(root)),
+        started=datetime(2026, 10, 17, 21, 11, 9),
+    )
+    processor = _bare_processor([])
+    processor._dump(7, b"\x01\x02" * 100)
+
+    written = list(Path(session.dump_dir).glob("*.wav"))
+    assert len(written) == 1
+    with wave.open(str(written[0]), "rb") as handle:
+        assert handle.getnframes() == 100
+
+
+def test_a_dump_with_no_conversation_open_writes_nothing(isolated_recording):
+    """A bare processor must not fall back on the developer's own recordings."""
+    processor = _bare_processor([])
+    processor._dump(7, b"\x01\x02" * 100)
+
+    assert list(isolated_recording.rglob("*.wav")) == []
