@@ -1,0 +1,61 @@
+# The bot on an always-on host: an OVH VPS, or a mini-PC at home.
+#
+#   sudo install -m 644 deploy/systemd/bogos-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now bogos-bot
+#   journalctl -u bogos-bot -f
+#
+# The two secrets are deliberately NOT in EnvironmentFile. systemd's own man
+# page, on that directive: environment variables "are not suitable for passing
+# secrets (such as passwords, key material, ...) to service processes" - they
+# are exposed to unprivileged clients over D-Bus and propagate down the process
+# tree. They come from credentials instead, which systemd decrypts at start and
+# exposes to this service alone. How to create them: deploy/vps.md
+
+[Unit]
+Description=BOGOS bot - Discord voice transcription
+Documentation=https://github.com/BOGOSbot/BOGOS-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bogos
+Group=bogos
+WorkingDirectory=/opt/bogos-bot
+
+# LoadCredentialEncrypted needs systemd 250 or later (Ubuntu 24.04, Debian 12).
+# On an older host use LoadCredential= against a root-owned 600 file instead:
+# the secret stays in plaintext on disk, but is still out of the environment and
+# out of "systemctl show". See deploy/vps.md.
+#
+# Resolved from /etc/credstore.encrypted/<name> and made readable only to this
+# service, at $CREDENTIALS_DIRECTORY/<name>, for as long as it runs. config.py
+# reads them from there and falls back to the environment when absent, so a
+# missing credential starts the service and fails loudly on the missing token
+# rather than refusing to boot.
+LoadCredentialEncrypted=discord-token
+LoadCredentialEncrypted=openrouter
+
+# Settings only. No keys.
+EnvironmentFile=/etc/bogos-bot.env
+
+ExecStart=/opt/bogos-bot/.venv/bin/python /opt/bogos-bot/main.py
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# What can be hardened today. ProtectSystem=strict is not here because the bot
+# writes status.json, live-session.json, glossary.session.txt and recording.json
+# into the checkout; pinning those to /var/lib/bogos-bot would let the code be
+# read-only, and that is the next step.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

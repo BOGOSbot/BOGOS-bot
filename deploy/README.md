@@ -1,5 +1,9 @@
 # Wake-on-demand deployment
 
+**This route is torn down** — see the outcome at the bottom. For the host we
+actually use, an always-on VPS or mini-PC, read [vps.md](vps.md) instead: it
+covers the systemd unit and how the two secrets get onto the box.
+
 *The bot is used a few hours a week, unpredictably. Paying for an always-on box
 would be wasted: instead the Box sleeps, and a free Worker wakes it from Discord.*
 

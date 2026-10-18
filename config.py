@@ -5,9 +5,36 @@ Groups settings into logical dataclasses with environment variable loading and v
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _secret(name: str, credential: str) -> str:
+    """A value that may live in a systemd credential, or in the environment.
+
+    The credential wins when there is one. On a deployed host systemd decrypts
+    it at service start and exposes it to that service alone, at
+    $CREDENTIALS_DIRECTORY/<credential>, for as long as it runs: there is no
+    .env to leak and nothing for "systemctl show" to print. On a workstation
+    there is no CREDENTIALS_DIRECTORY and this is the plain environment
+    variable, which is how .env and the widget reach it.
+
+    A credential that cannot be read falls through rather than refusing to
+    boot: the service comes up and the operator sees a missing-token error
+    naming the problem, instead of a unit that will not start.
+    """
+    directory = os.getenv("CREDENTIALS_DIRECTORY")
+    if directory:
+        path = Path(directory) / credential
+        try:
+            if path.is_file():
+                return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return _env_str(name, "")
 
 
 def _env_list(name: str, default: str) -> list[str]:
@@ -57,7 +84,7 @@ def _env_float(name: str, default: float) -> float:
 # ──────────────────────────────────────────────
 @dataclass(frozen=True)
 class DiscordConfig:
-    token: str = field(default_factory=lambda: _env_str("DISCORD_TOKEN", ""))
+    token: str = field(default_factory=lambda: _secret("DISCORD_TOKEN", "discord-token"))
     command_prefix: str = field(default_factory=lambda: _env_str("COMMAND_PREFIX", "!"))
 
 
@@ -270,7 +297,7 @@ class STTConfig:
         )
     )
     api_key: str = field(
-        default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
+        default_factory=lambda: _secret("OPENROUTER_API_KEY", "openrouter")
     )
     api_timeout_seconds: float = field(
         default_factory=lambda: _env_float("STT_API_TIMEOUT", 120.0)
@@ -349,7 +376,7 @@ class APIConfig:
         default_factory=lambda: _env_str("STT_BACKEND", "local")
     )  # "local" (faster-whisper) or "openrouter"
     openrouter_key: str = field(
-        default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
+        default_factory=lambda: _secret("OPENROUTER_API_KEY", "openrouter")
     )
     # How long one cloud request may take before it is given up on.
     timeout_seconds: float = field(
@@ -374,7 +401,7 @@ class CleanupConfig:
     # is being diagnosed it only adds a second suspect.
     enabled: bool = field(default_factory=lambda: _env_bool("CLEANUP_ENABLED", False))
     openrouter_key: str = field(
-        default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
+        default_factory=lambda: _secret("OPENROUTER_API_KEY", "openrouter")
     )
     model: str = field(
         default_factory=lambda: _env_str(
