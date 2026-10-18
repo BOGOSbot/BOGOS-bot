@@ -251,6 +251,13 @@ class STTConfig:
             "translate it, and do not describe the audio.",
         )
     )
+    # The proper nouns to expect, one per line, attached to every chunk. A
+    # relative path is resolved against the project root. Empty turns it off,
+    # and so does a missing file. Read fresh before each request, so adding a
+    # word applies to the next chunk; see stt/glossary.py for the size argument.
+    glossary_file: str = field(
+        default_factory=lambda: _env_str("STT_GLOSSARY_FILE", "glossary.txt")
+    )
     api_key: str = field(
         default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
     )

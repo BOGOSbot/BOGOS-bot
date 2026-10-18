@@ -125,6 +125,30 @@ The model is `google/gemini-2.5-flash`, not the lite tier. Measured on two
 recordings of one speaker, lite lost the content of four of six shapings of the
 same audio, and flash lost none.
 
+## The glossary
+
+A game of Warhammer 40,000 is dense with names that sound like ordinary French
+and are spelled nothing like it: the decoder wrote *Louvre* for Drukhari and
+*ecrans* for Necrons. `glossary.txt` is a plain list of the proper nouns to expect,
+one per line, attached to every transcription request. Add a line whenever a
+session comes back with a name spelled wrong; it is read fresh, so the next
+chunk picks it up without a restart.
+
+It is paid on every chunk, which is what decides its size. The whole corpus from
+the rules repository is about 42,000 tokens — 95% of a one-minute chunk, and 8.6x
+the cost of a session. Scoping it to the three armies of one game is about 3,000.
+The list that ships is 102 terms, about 330 tokens, and holds the game's
+vocabulary rather than any army's: the factions under both their printed and
+their spoken names, the rule terms, and the wargear people name out loud.
+
+Two things a naive list gets wrong. `Agamatus` only exists inside `Agamatus
+Custodians`, so a list of whole names contains no word of half of what is said.
+And `Eldar` is not in the corpus at all — 11th edition renamed it `Aeldari`,
+and every player still says the old one.
+
+Set `STT_GLOSSARY_FILE` to another path to use another list, or empty to turn it
+off.
+
 ## Install
 
 ```bash

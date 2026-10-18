@@ -30,6 +30,7 @@ import urllib.request
 from typing import Any
 
 from config import audio_cfg, stt_cfg
+from stt import glossary
 from stt.chunker import pcm_to_wav
 from utils.logging import get_logger
 
@@ -313,7 +314,9 @@ class GeminiTranscriber:
         best: dict[str, Any] | None = None
 
         for attempt in range(1, attempts + 1):
-            prompt = stt_cfg.chunk_prompt
+            # The vocabulary goes on the base prompt, so the retry still
+            # carries it and the two attempts share a cacheable prefix.
+            prompt = glossary.append_to(stt_cfg.chunk_prompt)
             if attempt > 1:
                 prompt += RETRY_SUFFIX
             result = self._ask(prompt, pcm)
