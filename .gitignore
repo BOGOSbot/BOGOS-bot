@@ -27,6 +27,10 @@ recordings/
 .wrangler/
 wrangler.toml.bak
 
+# The team's own glossary: their armies, their players, the venue. The shipped
+# glossary.txt carries the vocabulary that is the same for everybody.
+glossary.local.txt
+
 # Widget window position, local to this machine.
 widget-state.json
 

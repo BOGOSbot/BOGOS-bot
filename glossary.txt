@@ -1,13 +1,21 @@
 # BOGOS bot glossary.
 #
-# One proper noun per line. Blank lines and lines starting with # are ignored.
-# The list is attached to every transcription request, so its size is paid on
-# every chunk: it is the vocabulary of the game in general, not of any one army.
-# Add a line whenever a session comes back with a name spelled wrong.
+# One name per line. Blank lines and lines starting with # are ignored.
 #
-# Read fresh before each request, so an edit applies to the next chunk without
-# a restart. Point STT_GLOSSARY_FILE somewhere else to use another list, or set
-# it empty to turn the whole thing off.
+# The bot transcribes a French-speaking Warhammer 40,000 tournament team: army
+# lists, pairings and matchups, then travel, accommodation and payment. This is
+# the vocabulary of that in general. What is nobody else's business - your
+# armies, your players, the venue, the gite - goes in glossary.local.txt, which
+# is gitignored and read after this one.
+#
+# It is attached to every transcription request, so its size is paid on every
+# chunk. Add a line whenever a session comes back with a name spelled wrong.
+# The whole Warhammer 40,000 corpus is about 42,000 tokens, 95% of a one-minute
+# chunk, so this stays a core list and grows from what the meetings get wrong.
+#
+# Read fresh before each request, so an edit applies to the next chunk without a
+# restart. Point STT_GLOSSARY_FILE somewhere else, or set it empty to turn the
+# glossary off.
 
 # -- the game ---------------------------------------------------------------
 Warhammer 40,000
@@ -65,6 +73,32 @@ Daemons
 Genestealers
 Boyz
 Titans
+
+# -- a tournament week ------------------------------------------------------
+# English loanwords French players use as they are, the tools a list gets built
+# in, and what a tournament weekend runs on. Ordinary French is left out on
+# purpose: the model already spells "appariement" and "hebergement" correctly,
+# and a list that contains them invites it to write them where nobody said them.
+pairing
+matchup
+round
+roster
+check-in
+deadline
+planning
+budget
+booking
+Airbnb
+BlaBlaCar
+SNCF
+OUIGO
+TGV
+PayPal
+Lydia
+Revolut
+BattleScribe
+New Recruit
+Best Coast Pairings
 
 # -- the table --------------------------------------------------------------
 # Only terms a French speaker would not otherwise produce. "Objective",

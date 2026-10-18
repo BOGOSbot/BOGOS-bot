@@ -240,15 +240,18 @@ class STTConfig:
         default_factory=lambda: _env_int("STT_CHUNK_ATTEMPTS", 2)
     )
     # Audio arrives as audio; the prompt is the only place the model can learn
-    # what it is listening to, and naming the game is what makes it spell the
-    # unit names the way the table did.
+    # what it is listening to, and naming the setting is what makes it spell the
+    # names the way the table did. This describes what the bot is actually used
+    # for: a team meeting, not a game. A game session overrides it.
     chunk_prompt: str = field(
         default_factory=lambda: _env_str(
             "STT_CHUNK_PROMPT",
-            "Transcribe this audio. It is a game of Warhammer 40,000 being "
-            "played by two people in French. Return only the transcript, in "
-            "French, one paragraph per utterance. Do not summarise it, do not "
-            "translate it, and do not describe the audio.",
+            "Transcribe this audio. It is a French-speaking Warhammer 40,000 "
+            "tournament team: they are reviewing army lists, agreeing pairings "
+            "and matchups, and organising travel, accommodation and payment. "
+            "Return only the transcript, in French, one paragraph per "
+            "utterance. Do not summarise it, do not translate it, and do not "
+            "describe the audio.",
         )
     )
     # The proper nouns to expect, one per line, attached to every chunk. A
@@ -257,6 +260,14 @@ class STTConfig:
     # word applies to the next chunk; see stt/glossary.py for the size argument.
     glossary_file: str = field(
         default_factory=lambda: _env_str("STT_GLOSSARY_FILE", "glossary.txt")
+    )
+    # A second list, read after the first, for what does not belong in a public
+    # repository: the team's own armies and players, the venue, the gite. It is
+    # gitignored and absent by default.
+    glossary_local_file: str = field(
+        default_factory=lambda: _env_str(
+            "STT_GLOSSARY_LOCAL_FILE", "glossary.local.txt"
+        )
     )
     api_key: str = field(
         default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")

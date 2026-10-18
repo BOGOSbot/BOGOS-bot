@@ -17,7 +17,7 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 Not real time, and not per utterance. Silero VAD cuts each speaker's speech, the
 pieces accumulate in a per-speaker buffer, and the moment that buffer holds one
 minute it is sent to the model in one request. A whole chunk gives the model the
-context that makes it spell the game's proper nouns the way the table did; a
+context that makes it spell the group's proper nouns the way the table did; a
 sentence at a time it guesses, which is what "battle shop" was.
 
 Chunks are kept per speaker, because concatenating two people into one stream
@@ -127,27 +127,34 @@ same audio, and flash lost none.
 
 ## The glossary
 
-A game of Warhammer 40,000 is dense with names that sound like ordinary French
-and are spelled nothing like it: the decoder wrote *Louvre* for Drukhari and
-*ecrans* for Necrons. `glossary.txt` is a plain list of the proper nouns to expect,
-one per line, attached to every transcription request. Add a line whenever a
-session comes back with a name spelled wrong; it is read fresh, so the next
-chunk picks it up without a restart.
+The bot transcribes a French-speaking Warhammer 40,000 tournament team: they are
+reviewing army lists, agreeing pairings and matchups, then organising travel,
+accommodation and payment. That is dense with names that sound like ordinary
+French and are spelled nothing like it — the decoder wrote *Louvre* for Drukhari
+and *ecrans* for Necrons, and on a real session *l'arcon et les cobalites* for
+*l'Archon et les Kabalites*.
+
+`glossary.txt` is a plain list of the names to expect, one per line, attached to
+every transcription request. Add a line whenever a session comes back with a name
+spelled wrong; it is read fresh, so the next chunk picks it up without a restart.
+`glossary.local.txt` is read after it and is gitignored, for what does not belong
+in a public repository: your armies, your players, the venue, the gite.
 
 It is paid on every chunk, which is what decides its size. The whole corpus from
 the rules repository is about 42,000 tokens — 95% of a one-minute chunk, and 8.6x
 the cost of a session. Scoping it to the three armies of one game is about 3,000.
-The list that ships is 102 terms, about 330 tokens, and holds the game's
-vocabulary rather than any army's: the factions under both their printed and
-their spoken names, the rule terms, and the wargear people name out loud.
+The list that ships is 122 terms, about 380 tokens, and holds the vocabulary that
+is the same for everybody: the factions under both their printed and their spoken
+names, the rule terms, the wargear people name out loud, and the loanwords and
+tools a tournament week runs on.
 
 Two things a naive list gets wrong. `Agamatus` only exists inside `Agamatus
 Custodians`, so a list of whole names contains no word of half of what is said.
 And `Eldar` is not in the corpus at all — 11th edition renamed it `Aeldari`,
 and every player still says the old one.
 
-Set `STT_GLOSSARY_FILE` to another path to use another list, or empty to turn it
-off.
+Set `STT_GLOSSARY_FILE` or `STT_GLOSSARY_LOCAL_FILE` to another path, or empty to turn
+either off.
 
 ## Install
 
