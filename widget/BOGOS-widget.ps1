@@ -31,6 +31,10 @@ $recordingFile = Join-Path $root 'recording.json'
 # than an endpoint because both run on this machine and neither should need a
 # port open to know about the other.
 $statusFile = Join-Path $root 'status.json'
+# The bot reads its Discord token and its model keys from here. The widget
+# writes one line of it and leaves every other line exactly as it found it.
+# .gitignore keeps it out of the repository; .env.example is the template.
+$envFile = Join-Path $root '.env'
 
 # Glyphs built from code points rather than typed into the file: Windows
 # PowerShell reads a .ps1 as ANSI unless it carries a byte-order mark, and these
@@ -84,7 +88,7 @@ $keyFaceDown = [System.Drawing.Color]::FromArgb(36, 33, 30)
 # 4px units. 352x176 is wide and short like a rack unit: it reads as gear and
 # covers less of whatever is behind it than a square card would.
 $W = 352
-$H = 176
+$H = 190
 $PAD = 14
 $RAIL_H = 30
 $WELL_Y = 34
@@ -92,8 +96,9 @@ $WELL_H = 58
 $KEY_Y = 98
 $KEY_W = 212
 $KEY_H = 32
-$DEST_Y = 136
-$LOG_Y = 153
+$DEST_Y = 133
+$API_Y = 150
+$LOG_Y = 167
 
 function Get-BotProcess {
     # The bot is a python process running main.py. Nothing in this script's own
@@ -203,6 +208,90 @@ function Set-Recording($enabled, $folder) {
     # contract with recording.py, which pins them in its tests.
     $json = @{ enabled = [bool]$enabled; folder = [string]$folder } | ConvertTo-Json
     [System.IO.File]::WriteAllText($recordingFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# --- the environment file ---------------------------------------------------
+# That file is hand-edited, so it is read and rewritten line by line rather
+# than regenerated: comments, blank lines and every other key survive a save.
+
+
+function Read-EnvText {
+    if (Test-Path $envFile) { return [System.IO.File]::ReadAllText($envFile) }
+    # A fresh clone has the example and no .env. Seeding from it is what a
+    # person would do by hand, and it leaves the token line there to fill in.
+    $example = Join-Path $root '.env.example'
+    if (Test-Path $example) { return [System.IO.File]::ReadAllText($example) }
+    return ''
+}
+
+function Get-EnvValue($name) {
+    $pattern = '^\s*' + [regex]::Escape($name) + '\s*=\s*(.*)$'
+    foreach ($line in ((Read-EnvText) -split "[\r\n]+")) {
+        if ($line -match $pattern) {
+            $value = $Matches[1].Trim()
+            if ($value.Length -ge 2) {
+                $first = $value.Substring(0, 1)
+                $last = $value.Substring($value.Length - 1, 1)
+                if (($first -eq [string][char]34 -and $last -eq [string][char]34) -or
+                    ($first -eq [string][char]39 -and $last -eq [string][char]39)) {
+                    $value = $value.Substring(1, $value.Length - 2)
+                }
+            }
+            return $value
+        }
+    }
+    return ''
+}
+
+function Format-EnvValue($value) {
+    # dotenv reads a bare value only up to the first space or comment marker.
+    if ($value -match '[#\s]') { return [string][char]34 + $value + [string][char]34 }
+    return $value
+}
+
+function Set-EnvValue($name, $value) {
+    $text = Read-EnvText
+    $crlf = [string][char]13 + [string][char]10
+    $nl = if ($text.Contains($crlf)) { $crlf } else { [string][char]10 }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    if ($text.Length -gt 0) {
+        foreach ($piece in ($text -split [string][char]10)) {
+            $lines.Add($piece.TrimEnd([char]13))
+        }
+        # A trailing newline leaves one empty element; drop it, or the file
+        # grows a blank line every time a key is saved.
+        if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
+            $lines.RemoveAt($lines.Count - 1)
+        }
+    }
+
+    $pattern = '^\s*' + [regex]::Escape($name) + '\s*='
+    $replaced = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match $pattern) {
+            $lines[$i] = $name + '=' + (Format-EnvValue $value)
+            $replaced = $true
+            break
+        }
+    }
+    if (-not $replaced) {
+        if ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Trim() -ne '') { $lines.Add('') }
+        $lines.Add('# Written by the widget.')
+        $lines.Add($name + '=' + (Format-EnvValue $value))
+    }
+
+    try {
+        [System.IO.File]::WriteAllText(
+            $envFile, ($lines -join $nl) + $nl, (New-Object System.Text.UTF8Encoding($false))
+        )
+        return $true
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            'Could not write .env: ' + $_.Exception.Message, 'BOGOS bot'
+        ) | Out-Null
+        return $false
+    }
 }
 
 function Choose-Folder {
@@ -437,6 +526,24 @@ $dest.Cursor = [System.Windows.Forms.Cursors]::Hand
 $dest.TabIndex = 2
 $form.Controls.Add($dest)
 
+$apiRow = New-Object System.Windows.Forms.Button
+$apiRow.Text = 'add an OpenRouter key'
+$apiRow.Font = New-UiFont 8
+$apiRow.Size = New-Object System.Drawing.Size(($W - 2 * $PAD + 6), 15)
+$apiRow.Location = New-Object System.Drawing.Point(($PAD - 3), $API_Y)
+$apiRow.FlatStyle = 'Flat'
+$apiRow.FlatAppearance.BorderSize = 0
+$apiRow.FlatAppearance.MouseOverBackColor = $case
+$apiRow.FlatAppearance.MouseDownBackColor = $case
+$apiRow.UseVisualStyleBackColor = $false
+$apiRow.BackColor = $case
+$apiRow.ForeColor = $ivoryDim
+$apiRow.TextAlign = 'MiddleLeft'
+$apiRow.AutoEllipsis = $true
+$apiRow.Cursor = [System.Windows.Forms.Cursors]::Hand
+$apiRow.TabIndex = 3
+$form.Controls.Add($apiRow)
+
 $logLine = New-Object System.Windows.Forms.Label
 $logLine.Text = ''
 $logLine.Font = New-UiFont 7.5
@@ -450,6 +557,159 @@ $form.Controls.Add($logLine)
 # ToolTip is its own component in WinForms; controls have no ToolTipText at
 # runtime, only the extender adds one at design time.
 $tipProvider = New-Object System.Windows.Forms.ToolTip
+
+# --- the key dialog ---------------------------------------------------------
+# A modal of the same case, not a system dialog: it is the one place a secret
+# is typed, and it should look like part of the thing it configures.
+
+function New-DialogButton($text, $x, $y, $w) {
+    $button = New-Object System.Windows.Forms.Button
+    $button.Text = $text
+    $button.Font = New-DisplayFont 10
+    $button.Size = New-Object System.Drawing.Size($w, 32)
+    $button.Location = New-Object System.Drawing.Point($x, $y)
+    $button.FlatStyle = 'Flat'
+    $button.FlatAppearance.BorderSize = 1
+    $button.FlatAppearance.BorderColor = $hair
+    $button.FlatAppearance.MouseOverBackColor = $keyFaceHover
+    $button.FlatAppearance.MouseDownBackColor = $keyFaceDown
+    $button.UseVisualStyleBackColor = $false
+    $button.BackColor = $keyFace
+    $button.ForeColor = $ivory
+    $button.Cursor = [System.Windows.Forms.Cursors]::Hand
+    return $button
+}
+
+function Show-KeyDialog {
+    $dlgW = 440
+    $dlgH = 250
+
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.FormBorderStyle = 'None'
+    $dlg.StartPosition = 'CenterParent'
+    $dlg.Size = New-Object System.Drawing.Size($dlgW, $dlgH)
+    $dlg.BackColor = $case
+    $dlg.ShowInTaskbar = $false
+    $dlg.KeyPreview = $true
+    $dlg.Add_Paint({
+        param($sender, $e)
+        $pen = New-Object System.Drawing.Pen($hair, 1)
+        $e.Graphics.DrawRectangle($pen, 0, 0, $sender.Width - 1, $sender.Height - 1)
+        $pen.Dispose()
+    })
+
+    $head = New-Object System.Windows.Forms.Label
+    $head.Text = 'OpenRouter key'
+    $head.Font = New-DisplayFont 12
+    $head.ForeColor = $ivory
+    $head.BackColor = $case
+    $head.Location = New-Object System.Drawing.Point(20, 12)
+    $head.AutoSize = $true
+    $dlg.Controls.Add($head)
+
+    $seam = New-Object System.Windows.Forms.Panel
+    $seam.Location = New-Object System.Drawing.Point(0, 42)
+    $seam.Size = New-Object System.Drawing.Size($dlgW, 1)
+    $seam.BackColor = $hair
+    $dlg.Controls.Add($seam)
+
+    $body = New-Object System.Windows.Forms.Label
+    $body.Text = ('Transcribing in the cloud sends every chunk to OpenRouter, ' +
+                  'which needs a key. It is saved in .env on this machine and ' +
+                  'is not sent anywhere else.')
+    $body.Font = New-UiFont 8.5
+    $body.ForeColor = $screenInk
+    $body.BackColor = $case
+    $body.Location = New-Object System.Drawing.Point(20, 54)
+    $body.Size = New-Object System.Drawing.Size(($dlgW - 40), 40)
+    $dlg.Controls.Add($body)
+
+    $link = New-Object System.Windows.Forms.LinkLabel
+    $link.Text = 'Get one at openrouter.ai/keys'
+    $link.Font = New-UiFont 8.5
+    # Not the lamp's amber: on this panel that colour means "the bot is
+    # working", and a link is not that. The underline is the affordance.
+    $link.LinkColor = $ivoryDim
+    $link.ActiveLinkColor = $ivory
+    $link.VisitedLinkColor = $ivoryDim
+    $link.LinkBehavior = 'AlwaysUnderline'
+    $link.BackColor = $case
+    $link.Location = New-Object System.Drawing.Point(20, 96)
+    $link.AutoSize = $true
+    $link.Add_LinkClicked({
+        try { Start-Process 'https://openrouter.ai/keys' } catch { }
+    })
+    $dlg.Controls.Add($link)
+
+    $box = New-Object System.Windows.Forms.TextBox
+    $box.Text = Get-EnvValue 'OPENROUTER_API_KEY'
+    $box.Font = New-UiFont 10
+    $box.Location = New-Object System.Drawing.Point(20, 122)
+    $box.Size = New-Object System.Drawing.Size(($dlgW - 40), 26)
+    $box.BackColor = $well
+    $box.ForeColor = $ivory
+    $box.BorderStyle = 'FixedSingle'
+    # Masked by default: the dialog is the one place the key is on screen, and
+    # a shoulder is cheaper to defend against than a screenshot.
+    $box.UseSystemPasswordChar = $true
+    $box.TabIndex = 0
+    $dlg.Controls.Add($box)
+
+    $reveal = New-Object System.Windows.Forms.CheckBox
+    $reveal.Text = 'show it'
+    $reveal.Font = New-UiFont 8.5
+    $reveal.ForeColor = $screenInk
+    $reveal.BackColor = $case
+    $reveal.FlatStyle = 'Flat'
+    $reveal.Location = New-Object System.Drawing.Point(20, 156)
+    $reveal.AutoSize = $true
+    $reveal.Add_CheckedChanged({ $box.UseSystemPasswordChar = -not $reveal.Checked })
+    $dlg.Controls.Add($reveal)
+
+    $save = New-DialogButton 'SAVE' 20 196 140
+    $save.TabIndex = 1
+    $save.Add_Click({ Set-EnvValue 'OPENROUTER_API_KEY' $box.Text.Trim(); $dlg.Close() })
+    $dlg.Controls.Add($save)
+
+    $clear = New-DialogButton 'CLEAR' 168 196 110
+    $clear.TabIndex = 2
+    $clear.Add_Click({ Set-EnvValue 'OPENROUTER_API_KEY' ''; $dlg.Close() })
+    $dlg.Controls.Add($clear)
+
+    $cancel = New-DialogButton 'CANCEL' 286 196 134
+    $cancel.TabIndex = 3
+    $cancel.Add_Click({ $dlg.Close() })
+    $dlg.Controls.Add($cancel)
+
+    # Focus lands in the box. Put the caret at the end rather than selecting
+    # the whole key, which paints the one bright system colour in the dialog.
+    $dlg.Add_Shown({ $box.SelectionStart = $box.Text.Length; $box.SelectionLength = 0 })
+
+    $dlg.AcceptButton = $save
+    $dlg.Add_KeyDown({
+        param($sender, $e)
+        if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape) { $dlg.Close() }
+    })
+
+    $dragging = $false
+    $offset = New-Object System.Drawing.Point(0, 0)
+    foreach ($c in @($dlg, $head, $seam, $body)) {
+        $c.Add_MouseDown({ param($sender, $e) $script:dragging = $true; $script:offset = $e.Location })
+        $c.Add_MouseMove({
+            param($sender, $e)
+            if ($script:dragging) {
+                $dlg.Location = New-Object System.Drawing.Point(
+                    ($dlg.Location.X - $script:offset.X + $e.X),
+                    ($dlg.Location.Y - $script:offset.Y + $e.Y))
+            }
+        })
+        $c.Add_MouseUp({ param($sender, $e) $script:dragging = $false })
+    }
+
+    $dlg.ShowDialog($form) | Out-Null
+    $dlg.Dispose()
+    Update-Panel
+}
 
 # --- the refresh ------------------------------------------------------------
 # The tray icon is redrawn only when the state it shows actually changes: each
@@ -491,6 +751,12 @@ function Update-Panel {
         if ($recording.folder) { $dest.Text = 'not saving to disk' } else { $dest.Text = 'choose a folder' }
     }
 
+    if (Get-EnvValue 'OPENROUTER_API_KEY') {
+        $apiRow.Text = 'OpenRouter key set'
+    } else {
+        $apiRow.Text = 'add an OpenRouter key'
+    }
+
     $recWord.AccessibleName = 'Record audio to disk'
     $recWord.AccessibleDescription = $(if ($recording.enabled) { 'on' } else { 'off' })
     $keyBtn.AccessibleName = $keyBtn.Text + ' the bot'
@@ -507,6 +773,7 @@ function Update-Panel {
     $tipProvider.SetToolTip($recLamp, $tipRecording + ' Applies at the next !transcript session.')
     $tipProvider.SetToolTip($dest, $tipRecording + ' Click to choose the folder.')
     $tipProvider.SetToolTip($keyBtn, 'Start or stop the bot process.')
+    $tipProvider.SetToolTip($apiRow, 'The key cloud transcription uses. Saved in .env on this machine.')
     $tipProvider.SetToolTip($logLine, 'The last line the bot logged.')
 
     if ($trayKey -ne $script:trayKey) {
@@ -560,6 +827,10 @@ $dest.Add_Click({
     Set-Recording $recording.enabled $folder
     Update-Panel
 })
+
+$apiRow.Add_MouseEnter({ $apiRow.ForeColor = $ivory })
+$apiRow.Add_MouseLeave({ $apiRow.ForeColor = $ivoryDim })
+$apiRow.Add_Click({ Show-KeyDialog })
 
 $close.Add_MouseEnter({ $close.ForeColor = $ivory })
 $close.Add_MouseLeave({ $close.ForeColor = $screenInk })

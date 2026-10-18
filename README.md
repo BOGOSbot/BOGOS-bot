@@ -135,13 +135,17 @@ cp .env.example .env
 
 Set `DISCORD_TOKEN` in `.env`. Turn on the Message Content intent in the Discord Developer Portal, and invite the bot with both the `bot` and `applications.commands` scopes. Without Message Content it never sees the commands.
 
+Cloud transcription also needs `OPENROUTER_API_KEY`, from <https://openrouter.ai/keys>. On Windows the widget writes it for you: click the key line at the bottom of the panel, paste, SAVE. It rewrites that one line and leaves the rest of `.env` alone.
+
+`.env` is gitignored, and `tests/test_no_secrets.py` fails the suite if a key ever reaches the tree - as a shape, or as a value that is on the machine running the tests.
+
 ## Run
 
 ```bash
 .venv/bin/python main.py
 ```
 
-On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio. `widget/BOGOS-widget.ps1` is the front panel: a readout of what the bot is doing, one key that starts and stops it, and a REC latch that decides whether the voices are written to disk. Minimising leaves it in the tray, where the icon doubles as the status light. It can only show a log for bots it started itself.
+On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio. `widget/BOGOS-widget.ps1` is the front panel: a readout of what the bot is doing, one key that starts and stops it, a REC latch that decides whether the voices are written to disk, and a key line that puts the OpenRouter key into `.env`. Minimising leaves it in the tray, where the icon doubles as the status light. It can only show a log for bots it started itself.
 
 ![The widget while capturing](widget/screenshot.png)
 

@@ -51,7 +51,7 @@ def main() -> None:
         "Build %s | backend=%s | model=%s | language=%s",
         build_id(),
         api_cfg.backend,
-        api_cfg.model if api_cfg.backend == "openrouter" else stt_cfg.model_id,
+        stt_cfg.chunk_model if api_cfg.backend == "openrouter" else stt_cfg.model_id,
         stt_cfg.language,
     )
 
