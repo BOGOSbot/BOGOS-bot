@@ -279,11 +279,14 @@ class STTBot:
                         timeout=60.0,
                     )
                     # Asked per session rather than read once at import, so
-                    # the widget's switch applies without a restart. A no-op
+                    # the widget's switch applies without a restart. This is
+                    # where the conversation's folder is opened; a no-op
                     # unless recording is on.
+                    session = recording.open_session()
                     self._recorder = ChannelRecorder(
-                        recording.current().session_dir,
+                        session.directory if session else "",
                         audio_cfg.output_sample_rate,
+                        started=session.started if session else None,
                     )
                     vc.listen(STTAudioSink(self._audio_q, self._recorder))
             except asyncio.TimeoutError:
@@ -623,6 +626,9 @@ class STTBot:
         if self._recorder is not None:
             self._recorder.close()
             self._recorder = None
+        # Nothing heard after this belongs in the finished conversation, and the
+        # next !transcript opens a folder of its own.
+        recording.close_session()
 
         self._transcript_channel = None
         self._session_lines = []

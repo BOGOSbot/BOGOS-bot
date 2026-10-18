@@ -145,6 +145,18 @@ On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the sess
 
 ![The widget while capturing](widget/screenshot.png)
 
+Every `!transcript` gets its own folder under the recordings root, named in local
+time, so one conversation's material is in one place:
+
+```text
+E:\recordings\20261017-211109\
+    session.json                          who spoke, at what rate
+    332976311268147202__Ekvar.wav         one uncut WAV per speaker
+    dumps\0001-u332976311268147202.wav    one per utterance, exactly as heard
+```
+
+The widget's REC latch decides whether any of it is written. With it off, nothing is.
+
 ## Caveats
 
 - Do not trust a clean-speech benchmark for this job. On real French Warhammer speech, models that score well on read speech replace the proper nouns with common French words. Ours was chosen on the table, not on the benchmark.

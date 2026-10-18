@@ -68,6 +68,12 @@ _DRAIN_TIMEOUT = 300.0
 class STTProcessor:
     """Orchestrates VAD + transcription for all active users."""
 
+    # A latch, not state: set the first time a dump is asked for with no
+    # conversation open, so a broken pointer warns once rather than per
+    # utterance. A class attribute so a processor built without __init__ - as
+    # the tests build one - still has it.
+    _warned_no_session = False
+
     def __init__(
         self,
         audio_queue: MPQueue,
@@ -462,13 +468,22 @@ class STTProcessor:
 
     def _dump(self, user_id: int, audio: bytes) -> None:
         """Persist one utterance as WAV -- byte-for-byte what the model hears."""
-        # Asked per utterance, so switching recording off stops the very next
-        # one rather than the next restart.
-        dump_dir = recording.current().dump_dir
-        if not dump_dir:
+        # The folder belongs to the running conversation: the bot opens it at
+        # !transcript and clears it at !stop. Asked per utterance, so switching
+        # recording off stops the very next one rather than the next restart.
+        session = recording.current_session()
+        if session is None or not session.dump_dir:
+            # Expected when dumping is off. A fault when it is on and a folder
+            # was configured: say so once rather than losing the audio quietly.
+            expected = session is not None or not recording.current().dump_root
+            if not expected and not self._warned_no_session:
+                self._warned_no_session = True
+                logger.warning(
+                    "Utterance not dumped: no conversation is open to file it under."
+                )
             return
         try:
-            out = Path(dump_dir)
+            out = Path(session.dump_dir)
             out.mkdir(parents=True, exist_ok=True)
             self._dump_n += 1
             path = out / f"{self._dump_n:04d}-u{user_id}.wav"

@@ -35,3 +35,7 @@ recording.json
 
 # Live state for the widget; machine-local, never committed.
 status.json
+
+# The conversation now running; written by the bot, read by the transcription
+# worker, meaningless outside the run that made it.
+live-session.json

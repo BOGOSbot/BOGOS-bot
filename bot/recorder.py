@@ -6,7 +6,8 @@ receives, but it is cut by the current VAD settings. A corpus needs the audio
 and models compared on identical material without recapturing any of it.
 
 One continuous WAV per speaker at the pipeline's own rate, plus a session.json
-naming the participants. Off unless RECORD_DIR is set.
+naming the participants, all inside the folder recording.py opened for the
+conversation. Off unless the recording switch is on.
 
 This records other people's voices. It is opt-in for that reason.
 """
@@ -16,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 import wave
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from utils.logging import get_logger
@@ -35,10 +36,17 @@ def _safe(name: str) -> str:
 class ChannelRecorder:
     """Per-speaker WAVs for one session. A no-op when given no directory."""
 
-    def __init__(self, directory: str, sample_rate: int = 16_000) -> None:
+    def __init__(
+        self,
+        directory: str,
+        sample_rate: int = 16_000,
+        started: datetime | None = None,
+    ) -> None:
         self._root = Path(directory) if directory and directory.strip() else None
         self._rate = sample_rate
-        self._started = datetime.now(timezone.utc)
+        # The folder is already named for the session, so this is only for the
+        # index. Local time, to agree with the folder it sits in.
+        self._started = started or datetime.now().astimezone()
         self._files: dict[int, wave.Wave_write] = {}
         self._names: dict[int, str] = {}
 
@@ -75,11 +83,8 @@ class ChannelRecorder:
         return handle
 
     def _stem(self, user_id: int, name: str) -> str:
-        return "%s__%s__%s.wav" % (
-            self._started.strftime("%Y%m%d-%H%M%S"),
-            user_id,
-            _safe(name),
-        )
+        # No timestamp in the name: the folder this lands in is the session.
+        return "%s__%s.wav" % (user_id, _safe(name))
 
     def close(self) -> None:
         """Finalise every WAV and write the session index. Idempotent."""
@@ -101,8 +106,6 @@ class ChannelRecorder:
             "sample_width": 2,
             "speakers": {str(uid): name for uid, name in self._names.items()},
         }
-        path = self._root / (
-            self._started.strftime("%Y%m%d-%H%M%S") + "__session.json"
-        )
+        path = self._root / "session.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         logger.info("Recording index written: %s", path.name)
