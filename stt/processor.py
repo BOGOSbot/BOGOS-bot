@@ -171,7 +171,7 @@ class STTProcessor:
                 self._utterances.task_done()
                 return
 
-            seq, user_id, audio, seconds = item
+            seq, user_id, audio, seconds, started_at = item
             try:
                 result = self._transcriber.transcribe(user_id, audio)
                 if result and not self._plausible(result, audio):
@@ -185,6 +185,7 @@ class STTProcessor:
                 if result:
                     result["seq"] = seq
                     result["seconds"] = round(seconds, 1)
+                    result["started_at"] = started_at
                     result.setdefault("name", self._names.get(user_id, ""))
                 else:
                     logger.warning(
@@ -247,7 +248,7 @@ class STTProcessor:
         while self._utterances.unfinished_tasks > 0 and time.monotonic() < deadline:
             time.sleep(0.05)
 
-    def _enqueue(self, user_id: int, audio: bytes) -> None:
+    def _enqueue(self, user_id: int, audio: bytes, started_at: float = 0.0) -> None:
         self._dump(user_id, audio)
 
         # Guard 0: a segment shorter than the VAD padding cannot hold a word.
@@ -284,7 +285,7 @@ class STTProcessor:
         # Guard 2: level the utterance before it is sent.
         audio = _normalise(samples, stt_cfg.normalize_dbfs, stt_cfg.max_gain_db)
 
-        chunk = self._chunker.add(user_id, audio)
+        chunk = self._chunker.add(user_id, audio, started_at)
         if chunk is not None:
             self._emit_chunk(chunk)
 
@@ -299,7 +300,13 @@ class STTProcessor:
                 depth,
             )
         self._utterances.put(
-            (self._reserve_seq(), chunk.user_id, chunk.pcm, chunk.seconds)
+            (
+                self._reserve_seq(),
+                chunk.user_id,
+                chunk.pcm,
+                chunk.seconds,
+                chunk.started_at,
+            )
         )
 
     # -- internals --------------------------------
@@ -371,15 +378,24 @@ class STTProcessor:
 
             if is_speech:
                 if not state.is_speaking:
+                    state.speech_started_at = time.time()
                     for prev_frame in state.ring_buffer.drain():
                         state.speech_buffer.extend(prev_frame)
                 state.speech_buffer.extend(frame)
 
                 if len(state.speech_buffer) >= max_bytes:
-                    self._enqueue(user_id, bytes(state.reset_speech()))
+                    self._enqueue(
+                        user_id,
+                        bytes(state.reset_speech()),
+                        state.speech_started_at,
+                    )
             else:
                 if state.is_speaking:
-                    self._enqueue(user_id, bytes(state.reset_speech()))
+                    self._enqueue(
+                        user_id,
+                        bytes(state.reset_speech()),
+                        state.speech_started_at,
+                    )
                 state.ring_buffer.append(frame)
 
         return True
@@ -424,7 +440,9 @@ class STTProcessor:
         if not state.is_speaking:
             return
         logger.info("Flushed user %s speech due to %s.", state.user_id, reason)
-        self._enqueue(state.user_id, bytes(state.reset_speech()))
+        self._enqueue(
+            state.user_id, bytes(state.reset_speech()), state.speech_started_at
+        )
 
     def _flush_all(self, reason: str) -> None:
         for state in self._users.remove_all():

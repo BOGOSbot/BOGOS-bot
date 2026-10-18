@@ -26,6 +26,10 @@ class UserState:
     ring_buffer: RingBuffer = field(default=None)       # type: ignore[assignment]
     vad_iterator: object = field(default=None)            # Silero VADIterator
     last_activity: float = field(default_factory=time.time)
+    # When the speech currently in speech_buffer began, as a wall-clock epoch.
+    # Carried to the chunk so the finished transcript can be laid out in the
+    # order things were said instead of the order they were transcribed.
+    speech_started_at: float = 0.0
 
     def __post_init__(self) -> None:
         if self.ring_buffer is None:

@@ -38,6 +38,11 @@ class Chunk:
     pcm: bytes
     seconds: float
     utterances: int
+    # When this chunk's first utterance arrived, as a wall-clock epoch. Chunks
+    # are built per speaker and each fills at its own rate, so they come out of
+    # the pipeline in completion order, not in the order they were spoken.
+    # This is what puts the session back in order at the end.
+    started_at: float = 0.0
 
 
 @dataclass
@@ -46,6 +51,7 @@ class _Pending:
     parts: list[bytes] = field(default_factory=list)
     seconds: float = 0.0
     utterances: int = 0
+    started_at: float = 0.0
 
 
 def _silence(seconds: float) -> bytes:
@@ -67,12 +73,16 @@ class AudioChunker:
         self._pending: dict[int, _Pending] = {}
         self._next_seq = 1
 
-    def add(self, user_id: int, pcm: bytes) -> Chunk | None:
+    def add(
+        self, user_id: int, pcm: bytes, started_at: float = 0.0
+    ) -> Chunk | None:
         """Append one utterance; return a chunk when the buffer is full."""
         seconds = len(pcm) / (
             audio_cfg.output_sample_rate * audio_cfg.sample_width
         )
-        state = self._pending.setdefault(user_id, _Pending(seq=self._next_seq))
+        state = self._pending.setdefault(
+            user_id, _Pending(seq=self._next_seq, started_at=started_at)
+        )
         if state.utterances:
             state.parts.append(_silence(stt_cfg.chunk_gap_seconds))
             state.seconds += stt_cfg.chunk_gap_seconds
@@ -108,6 +118,7 @@ class AudioChunker:
             pcm=b"".join(state.parts),
             seconds=state.seconds,
             utterances=state.utterances,
+            started_at=state.started_at,
         )
 
 

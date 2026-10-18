@@ -59,6 +59,21 @@ def write_state(state: str) -> None:
         logger.warning("Could not write the status file: %s", exc)
 
 
+def in_arrival_order(entries: list[dict]) -> list[dict]:
+    """Put a session's chunks back in the order they were spoken.
+
+    Chunks are built per speaker and each fills at its own rate, so they arrive
+    in completion order: the quiet player's last five minutes can land before
+    the talkative one's first. Read in that order the session is grouped by
+    speaker; read in the order the speech arrived it is a conversation. Sorted
+    only when every chunk knows when it began, so an entry without a time
+    cannot jump the queue.
+    """
+    if not entries or not all(entry.get("started_at") for entry in entries):
+        return entries
+    return sorted(entries, key=lambda entry: entry["started_at"])
+
+
 def _short_model(model: str) -> str:
     """mistralai/voxtral-small-24b-2507-stt -> voxtral, for a readable label."""
     tail = (model or "").rsplit("/", 1)[-1]
@@ -447,6 +462,7 @@ class STTBot:
                 "name": name,
                 "text": text,
                 "seconds": result.get("seconds"),
+                "started_at": result.get("started_at"),
                 "line": line,
             }
         )
@@ -601,7 +617,7 @@ class STTBot:
         """
         channel = self._transcript_channel
         started = self._session_started_at
-        entries = list(self._entries)
+        entries = in_arrival_order(list(self._entries))
         logger.info("Closing the session with %d chunk(s).", len(entries))
 
         if self._recorder is not None:
