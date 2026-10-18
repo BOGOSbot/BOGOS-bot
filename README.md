@@ -141,14 +141,16 @@ Set `DISCORD_TOKEN` in `.env`. Turn on the Message Content intent in the Discord
 .venv/bin/python main.py
 ```
 
-On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio. `widget/BOGOS-widget.ps1` is a small panel with a start/stop toggle. Minimising leaves it in the tray. It can only show a log for bots it started itself.
+On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio. `widget/BOGOS-widget.ps1` is the front panel: a readout of what the bot is doing, one key that starts and stops it, and a REC latch that decides whether the voices are written to disk. Minimising leaves it in the tray, where the icon doubles as the status light. It can only show a log for bots it started itself.
+
+![The widget while capturing](widget/screenshot.png)
 
 ## Caveats
 
 - Do not trust a clean-speech benchmark for this job. On real French Warhammer speech, models that score well on read speech replace the proper nouns with common French words. Ours was chosen on the table, not on the benchmark.
 - The silence floor (`STT_MIN_SPEECH_DBFS`) is set by eye. The 77 recorded utterances run from -96 to -40 dBFS with no gap in between, so there is nothing to tune it against yet.
 - `!pairing` reads the sheet over its public link export and sends no credentials. If the sheet is private, it will not work.
-- Both the session recorder and the per-utterance dumps write other people's voices to disk. The widget's Record switch turns both off and picks the folder; that switch wins over `.env`. Ask people before you turn it on.
+- Both the session recorder and the per-utterance dumps write other people's voices to disk. The widget's REC latch turns both off and picks the folder; that latch wins over `.env`. Ask people before you turn it on.
 - `CLEANUP_ENABLED` is off. A text pass cannot tell a misheard word from a real one, so it has nothing useful to do.
 - Only run on Windows so far, and only against French speech.
 
