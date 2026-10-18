@@ -84,22 +84,23 @@ class STTProcessor:
 
         self._vad = VADWrapper()
 
-        # Only import the chosen backend, so the cloud path never pulls in torch.
-        self._second = None
+        # One transcriber, one reading. A whole chunk of speech carries enough
+        # context that the model stops guessing at the proper nouns, which is
+        # what the second model and the reconciler were compensating for.
         if api_cfg.backend == "openrouter":
-            from stt.api_transcriber import ApiTranscriber
+            from stt.gemini_transcriber import GeminiTranscriber
 
-            self._transcriber = ApiTranscriber()
-            # A second reading of the same audio, used only to find conflicts.
-            if api_cfg.second_opinion:
-                try:
-                    self._second = ApiTranscriber(api_cfg.second_opinion)
-                except Exception as exc:
-                    logger.warning("Second opinion unavailable: %s", exc)
+            self._transcriber = GeminiTranscriber()
         else:
             from stt.transcriber import Transcriber
 
             self._transcriber = Transcriber()
+
+        from stt.chunker import AudioChunker
+
+        self._chunker = AudioChunker(
+            stt_cfg.chunk_seconds, stt_cfg.chunk_max_seconds
+        )
 
         self._users = UserStateManager(vad_iterator_factory=self._vad.create_iterator)
         self._dump_n = 0
@@ -109,7 +110,7 @@ class STTProcessor:
 
         # Utterances waiting for a worker: (seq, user_id, pcm). Unbounded on
         # purpose: falling behind must delay the transcript, never lose speech.
-        self._utterances: "queue.Queue[Optional[Tuple[int, int, bytes]]]" = queue.Queue()
+        self._utterances: "queue.Queue[Optional[Tuple[int, int, bytes, float]]]" = queue.Queue()
         self._workers: list[threading.Thread] = []
         self._warned_at = 0
 
@@ -162,56 +163,6 @@ class STTProcessor:
                 if item is not None:
                     self._put_result(item)
 
-    def _with_second_opinion(
-        self, result: dict, user_id: int, audio: bytes
-    ) -> dict:
-        """Attach the other model's reading, and where the two part company.
-
-        This only ever adds to the result. A failure here must never cost the
-        reader the primary transcript, and an agreement is not reported at all.
-        """
-        if self._second is None:
-            return result
-        try:
-            alt = self._second.transcribe(user_id, audio)
-        except Exception as exc:
-            logger.warning("Second opinion failed: %s", exc)
-            return result
-
-        primary = (result.get("text") or "").strip()
-        other = (alt or {}).get("text", "").strip()
-        if not other or other == primary:
-            return result
-
-        # The guards were built for the primary reading, but a second model
-        # fabricates just as readily. Voxtral produced 14 memorised encyclopedia
-        # sentences in one 15-minute session, every one of them on a clip under
-        # two seconds, which is exactly what _plausible rejects by rate alone.
-        # Neither guard is complete, so this only ever adds a reading.
-        if not self._plausible({"text": other}, audio):
-            logger.warning("Second opinion rejected by rate: %s", other[:70])
-            return result
-        if artifacts.is_artifact(other):
-            logger.warning("Second opinion was a memorised artifact: %s", other[:70])
-            return result
-
-        if conflicts.classify(primary, other) is conflicts.Verdict.SAME:
-            return result  # wording moved, meaning did not: one reading is enough
-
-        found = conflicts.compare(primary, other)
-        result["alt_text"] = other
-        result["alt_model"] = self._second.model
-        result["conflicts"] = [
-            {"primary": d.primary, "other": d.other} for d in found
-        ]
-        share = conflicts.divergence(primary, other)
-        result["divergence"] = round(share, 3)
-        # One line, with each disagreement bracketed at the word that moved, so
-        # the reader sees exactly what is contested and nothing else twice.
-        result["conflict_note"] = conflicts.render(primary, other)
-        logger.info("Readings differ in %d span(s): %s", len(found), found[:3])
-        return result
-
     def _transcribe_loop(self) -> None:
         """One worker: pull an utterance, transcribe it, deliver it in order."""
         while True:
@@ -220,7 +171,7 @@ class STTProcessor:
                 self._utterances.task_done()
                 return
 
-            seq, user_id, audio = item
+            seq, user_id, audio, seconds = item
             try:
                 result = self._transcriber.transcribe(user_id, audio)
                 if result and not self._plausible(result, audio):
@@ -232,9 +183,15 @@ class STTProcessor:
                     )
                     result = None  # Guard 4: a subtitle credit, never speech.
                 if result:
-                    result = self._with_second_opinion(result, user_id, audio)
                     result["seq"] = seq
+                    result["seconds"] = round(seconds, 1)
                     result.setdefault("name", self._names.get(user_id, ""))
+                else:
+                    logger.warning(
+                        "No transcript for a %.0fs chunk from user %s.",
+                        seconds,
+                        user_id,
+                    )
                 self._deliver(seq, result)
             except Exception as exc:
                 logger.error("Transcription failed for user %s: %s", user_id, exc)
@@ -327,15 +284,23 @@ class STTProcessor:
         # Guard 2: level the utterance before it is sent.
         audio = _normalise(samples, stt_cfg.normalize_dbfs, stt_cfg.max_gain_db)
 
+        chunk = self._chunker.add(user_id, audio)
+        if chunk is not None:
+            self._emit_chunk(chunk)
+
+    def _emit_chunk(self, chunk) -> None:
+        """Queue a finished chunk for transcription."""
         depth = self._utterances.qsize()
-        if depth >= 25 and depth - self._warned_at >= 25:
+        if depth >= 5 and depth - self._warned_at >= 5:
             self._warned_at = depth
             logger.warning(
-                "%d utterances queued; the transcript is falling behind "
-                "real time but nothing is being lost.",
+                "%d chunks queued; the transcript is falling behind real time "
+                "but nothing is being lost.",
                 depth,
             )
-        self._utterances.put((self._reserve_seq(), user_id, audio))
+        self._utterances.put(
+            (self._reserve_seq(), chunk.user_id, chunk.pcm, chunk.seconds)
+        )
 
     # -- internals --------------------------------
 
@@ -423,6 +388,8 @@ class STTProcessor:
     def _flush_all(self, reason: str) -> None:
         for state in self._users.remove_all():
             self._flush_state(state, reason)
+        for chunk in self._chunker.flush():
+            self._emit_chunk(chunk)
 
     def _flush_stale_speech(self) -> None:
         for state in self._users.stale_speech_states():

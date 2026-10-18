@@ -179,6 +179,51 @@ class STTConfig:
     fallback_model_id: str = field(
         default_factory=lambda: _env_str("STT_FALLBACK_MODEL_ID", "base")
     )
+    #
+    # Chunked transcription. One request per chunk of speech, sent as soon as
+    # the chunk is full, so a long session is settled as it runs instead of in
+    # one wait at the end. Five minutes of 16 kHz mono encodes to 12.8 MB, and
+    # the provider refuses a request body over 20 MB, so the ceiling is about
+    # 7.8 minutes; 300 seconds leaves room and still gives the model a whole
+    # exchange to read rather than a sentence.
+    chunk_seconds: float = field(
+        default_factory=lambda: _env_float("STT_CHUNK_SECONDS", 300.0)
+    )
+    chunk_max_seconds: float = field(
+        default_factory=lambda: _env_float("STT_CHUNK_MAX_SECONDS", 450.0)
+    )
+    chunk_gap_seconds: float = field(
+        default_factory=lambda: _env_float("STT_CHUNK_GAP_SECONDS", 0.4)
+    )
+    chunk_model: str = field(
+        default_factory=lambda: _env_str(
+            "STT_CHUNK_MODEL", "google/gemini-2.5-flash-lite"
+        )
+    )
+    chunk_max_tokens: int = field(
+        default_factory=lambda: _env_int("STT_CHUNK_MAX_TOKENS", 16000)
+    )
+    chunk_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("STT_CHUNK_TIMEOUT", 600.0)
+    )
+    # Audio arrives as audio; the prompt is the only place the model can learn
+    # what it is listening to, and naming the game is what makes it spell the
+    # unit names the way the table did.
+    chunk_prompt: str = field(
+        default_factory=lambda: _env_str(
+            "STT_CHUNK_PROMPT",
+            "Transcribe this audio. It is a game of Warhammer 40,000 being "
+            "played by two people in French. Return only the transcript, in "
+            "French, one paragraph per utterance. Do not summarise it, do not "
+            "translate it, and do not describe the audio.",
+        )
+    )
+    api_key: str = field(
+        default_factory=lambda: _env_str("OPENROUTER_API_KEY", "")
+    )
+    api_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("STT_API_TIMEOUT", 120.0)
+    )
     fallback_device: str = field(
         default_factory=lambda: _env_str("STT_FALLBACK_DEVICE", "cpu")
     )
@@ -269,11 +314,6 @@ class APIConfig:
     # Speeders), so a judge reading text alone would prefer the wrong reading.
     # Prices are per second of audio, so this adds spend rather than quality:
     # gpt is $0.27/hour of speech, voxtral $0.18, both together $0.45. Empty off.
-    second_opinion: str = field(
-        default_factory=lambda: _env_str(
-            "STT_SECOND_OPINION", "mistralai/voxtral-small-24b-2507-stt"
-        )
-    )
     timeout_seconds: float = field(
         default_factory=lambda: _env_float("STT_API_TIMEOUT", 120.0)
     )
@@ -309,54 +349,6 @@ class CleanupConfig:
 
 
 # ──────────────────────────────────────────────
-# End-of-session reconciliation (LLM)
-# ──────────────────────────────────────────────
-@dataclass(frozen=True)
-class ReconcileConfig:
-    """One LLM pass over a finished session, to settle what the text can settle.
-
-    Two readings are reconciled mechanically as they arrive. What is left is the
-    same meaning said differently, a fabricated reading, or a real dispute. The
-    model settles the first two and is told to keep both readings for the third,
-    because it never hears the audio and the wrong reading is usually the fluent
-    one. Costs nothing on the free tier and one call per session.
-    """
-    enabled: bool = field(
-        default_factory=lambda: _env_bool("RECONCILE_ENABLED", True)
-    )
-    # Deployed on SenseNova's free tier, tried in order so a busy model can
-    # fall through to the next. On 2026-10-17 the endpoint lists
-    # sensenova-6.7-flash-lite but answers every chat call for it with 404, so
-    # the fallback is ready rather than useful until that changes. Point
-    # RECONCILE_BASE_URL at api.deepseek.com/v1 with RECONCILE_MODELS=
-    # deepseek-flash and RECONCILE_API_KEY set for the paid route used in
-    # testing: measured on the same 18 disputed lines, SenseNova answered none
-    # of them in eleven minutes and DeepSeek settled all 18 in 84 seconds.
-    models: list[str] = field(
-        default_factory=lambda: _env_list(
-            "RECONCILE_MODELS", "sensenova-6.8-flash-lite"
-        )
-    )
-    base_url: str = field(
-        default_factory=lambda: _env_str(
-            "RECONCILE_BASE_URL", "https://token.sensenova.ai/v1"
-        )
-    )
-    api_key: str = field(
-        default_factory=lambda: _env_str("RECONCILE_API_KEY", "")
-        or _env_str("SENSENOVA_API_KEY", "")
-    )
-    # Choosing between two given readings is judgement, not a hard problem, so
-    # the cheapest reasoning is the right amount of it.
-    reasoning_effort: str = field(
-        default_factory=lambda: _env_str("RECONCILE_REASONING", "low")
-    )
-    # Per call, not per pass. A batch of eight answers in seconds when healthy.
-    timeout_seconds: float = field(
-        default_factory=lambda: _env_float("RECONCILE_TIMEOUT", 75.0)
-    )
-
-
 # ──────────────────────────────────────────────
 # Transcript output
 # ──────────────────────────────────────────────
@@ -392,6 +384,5 @@ stt_cfg = STTConfig()
 api_cfg = APIConfig()
 cleanup_cfg = CleanupConfig()
 transcript_cfg = TranscriptConfig()
-reconcile_cfg = ReconcileConfig()
 process_cfg = ProcessConfig()
 log_cfg = LogConfig()

@@ -15,7 +15,6 @@ import json
 import queue
 import re
 
-from stt import conflicts
 import time
 from datetime import datetime, timezone
 from multiprocessing import Queue as MPQueue
@@ -35,21 +34,11 @@ from config import (
     cleanup_cfg,
     discord_cfg,
     process_cfg,
-    reconcile_cfg,
     transcript_cfg,
 )
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-# A bracket is the only mark of a dispute, so the count is read from the
-# brackets rather than from a flag the reconciler could move.
-_BRACKET = re.compile(r"\([^()]* \| [^()]*\)")
-
-
-def _disputed_count(entries: list[dict]) -> int:
-    return sum(1 for e in entries if _BRACKET.search(e.get("final") or ""))
 
 
 STATUS_FILE = Path(__file__).resolve().parents[1] / "status.json"
@@ -107,6 +96,9 @@ class STTBot:
         # here with both readings, and the whole session is reconciled and
         # posted once, at the end.
         self._entries: list[dict] = []
+        # The file being appended to as chunks are transcribed, so a crash or a
+        # sleep costs at most the chunk in flight.
+        self._session_path: Path | None = None
         self._last_flush: float = 0.0
         self._speaker_names: dict[int, str] = {}
         # Set when the STT process reports its transcription backlog is empty.
@@ -442,33 +434,26 @@ class STTBot:
         if self._transcript_channel is None:
             return  # no active session; the log line is the only trace
 
-        # One line per utterance: the primary reading with each contested word
-        # bracketed in place. The second model's whole reading is deliberately
-        # not appended. A line beginning "> " is a Discord blockquote, and a
-        # blockquote swallows every line after it until a blank one, so the
-        # transcript arrived as one flat block with its tail in italics.
-        variant = result.get("alt_text")
-        body = result.get("conflict_note") or (
-            conflicts.render(text, variant) if variant else text
-        )
-        # The speaker label is kept out of the body. The reconciler is handed
-        # the words only, because a model treats "**Name** :" as formatting and
-        # returns the line without it; the name is not its to drop. It is
-        # reattached when the reconciled line is rebuilt.
-        line = f"**{name}** : {body}"
+        # One line per chunk, one reading. A chunk is several minutes of one
+        # speaker, so "**Name** :" is the whole label needed; there is no second
+        # reading to bracket and no reconciler to move the speaker's name out of
+        # the way. The blank line between entries is what keeps Discord from
+        # running them together into one paragraph.
+        line = f"**{name}** : {text}"
         self._session_lines.append(line)
         self._session_raw.append((name, text))
         self._entries.append(
             {
                 "name": name,
-                "primary": text,
-                "second": variant or "",
-                "alt_model": result.get("alt_model", ""),
-                "note": result.get("conflict_note") or "",
+                "text": text,
+                "seconds": result.get("seconds"),
                 "line": line,
-                "body": body,
             }
         )
+        # Written now, not at the end. A session can run for hours, and the
+        # transcript that exists is worth more than the one still in memory if
+        # the process dies or the machine sleeps.
+        self._append_to_session(line)
 
     def _speaker_name(self, user_id: object) -> str:
         """Resolve a Discord user id to a display name, with caching."""
@@ -607,22 +592,17 @@ class STTBot:
             logger.error("Could not post corrections: %s", exc)
 
     async def _close_session(self) -> None:
-        """Reconcile the two readings, post the result, keep the originals.
+        """Post the transcript, which was written as it arrived.
 
-        Nothing is posted while the session runs. The channel gets one
-        reconciled transcript at the end, for two reasons: a stream of variant
-        readings every few seconds is harder to read than the same text in one
-        piece, and judging a line needs the lines around it.
-
-        Both original readings are written to disk next to the reconciled text.
-        The reconciled transcript is a product; the pair it came from is the
-        evidence, and a reconciler that discards its evidence cannot be
-        evaluated or improved.
+        Nothing is posted while the session runs, because a transcript
+        interrupted every few minutes reads worse than the same text in one
+        piece. Each chunk is written to disk the moment it is transcribed, so
+        the only work left at the stop is to name the file and hand it over.
         """
         channel = self._transcript_channel
         started = self._session_started_at
         entries = list(self._entries)
-        logger.info("Closing the session with %d utterance(s).", len(entries))
+        logger.info("Closing the session with %d chunk(s).", len(entries))
 
         if self._recorder is not None:
             self._recorder.close()
@@ -634,6 +614,7 @@ class STTBot:
         self._entries = []
         self._pending = []
         self._session_started_at = None
+        self._session_path = None
 
         if channel is None:
             write_state("sleeping")
@@ -655,115 +636,29 @@ class STTBot:
             return
 
         stamp = (started or datetime.now(timezone.utc)).astimezone()
-        # The mechanical transcript is posted at once. The reconciler is a
-        # network call on an endpoint that stalls regularly, and waiting for it
-        # would leave the channel empty for minutes; the reader would rather
-        # have the session now and the polish later.
-        mechanical: list[str] = []
-        for entry in entries:
-            entry["final"] = f"**{entry['name']}** : {entry['body']}"
-            mechanical.append(entry["final"])
-        first = self._save_session(entries, mechanical, stamp)
-        await self._post_transcript(channel, first, mechanical, entries, reviewed=False)
+        text = [entry["line"] for entry in entries]
+        path = self._save_session(entries, text, stamp)
+        await self._post_transcript(channel, path, text, entries)
 
-        lines = await asyncio.to_thread(
-            self._reconcile,
-            entries,
-            self._retry_notice(channel, asyncio.get_running_loop()),
-        )
-        if lines != mechanical:
-            second = self._save_session(entries, lines, stamp, reviewed=True)
-            await self._post_transcript(
-                channel, second, lines, entries, reviewed=True
-            )
-        write_state("sleeping")
-
-    def _retry_notice(self, channel, loop):
-        """A one-off message when the endpoint makes the transcript late.
-
-        The pass retries until it answers, so nothing is lost, but silence while
-        it does looks like a hang. The channel is told once, on the first failed
-        attempt, that the wait is expected.
-        """
-        state = {"announced": False}
-
-        def notice(reason: str, attempt: int) -> None:
-            if state["announced"]:
-                return
-            state["announced"] = True
-
-            async def announce() -> None:
-                try:
-                    await channel.send(
-                        "The transcription review is late: the model timed out "
-                        "and I am retrying. The file is on disk and will be "
-                        "posted when the review answers."
-                    )
-                except discord.HTTPException as exc:
-                    logger.error("Could not post the retry notice: %s", exc)
-
-            # Called from the worker thread, so the coroutine is handed back to
-            # the loop the bot is running on. Discord's client has no .loop in
-            # this version, which is why the first notice never arrived.
-            asyncio.run_coroutine_threadsafe(announce(), loop)
-
-        return notice
-
-    def _reconcile(self, entries: list[dict], notice=None) -> list[str]:
-        """Settle the disputed lines, or leave them standing.
-
-        Blocking, so it runs off the event loop. Any failure leaves the
-        mechanical reconciliation in place: the bracket stays, both readings
-        stay visible, and nothing is lost but the polish. That is the safe
-        direction, because a missing transcript is worse than a rough one.
-        """
-        # The speaker name carries parentheses of its own, so the check runs on
-        # the body. Testing the whole line once sent all 161 lines to the model
-        # instead of the 45 that actually had a dispute in them.
-        numbered = [
-            f"{i}. {entry['body']}"
-            for i, entry in enumerate(entries, 1)
-            if "(" in entry["body"]
-        ]
-        replacements: dict[int, str] = {}
-        if numbered and reconcile_cfg.enabled:
-            try:
-                from stt.reconciler import reconcile
-
-                settled = reconcile(
-                    numbered,
-                    reconcile_cfg.base_url,
-                    reconcile_cfg.api_key,
-                    reconcile_cfg.models,
-                    reconcile_cfg.timeout_seconds,
-                    notice,
-                    reconcile_cfg.reasoning_effort,
+    def _append_to_session(self, line: str) -> None:
+        """Write one chunk's transcript the moment it exists."""
+        try:
+            out_dir = Path(transcript_cfg.save_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            if self._session_path is None:
+                stamp = (
+                    self._session_started_at or datetime.now(timezone.utc)
+                ).astimezone()
+                self._session_path = (
+                    out_dir / f"transcription-{stamp:%Y-%m-%d-%H%M}.md"
                 )
-                replacements = settled.replacements
-                if settled.error:
-                    logger.warning("Reconciler returned %s", settled.error)
-            except Exception as exc:
-                logger.warning("Reconciler unavailable: %s", exc)
-
-        lines: list[str] = []
-        for index, entry in enumerate(entries, 1):
-            body = replacements.get(index, entry["body"])
-            # The renderer adds no mark of its own any more, but a model given
-            # old text can echo one back, and one arrived on lines that held no
-            # bracket at all. Nothing decorative survives the judge.
-            body = body.replace("\u26a0", "").strip()
-            if not body.strip():
-                entry["final"] = ""
-                continue  # the reconciler judged the line a fabrication
-            line = f"**{entry['name']}** : {body}"
-            entry["final"] = line
-            lines.append(line)
-        logger.info(
-            "Session reconciled: %d line(s), %d settled by the model.",
-            len(lines),
-            len(replacements),
-        )
-        return lines
+                self._session_path.write_text(
+                    f"# Transcription — {stamp:%Y-%m-%d %H:%M}\n\n", encoding="utf-8"
+                )
+            with self._session_path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n\n")
+        except Exception as exc:
+            logger.error("Could not append to the transcript: %s", exc)
 
     async def _post_transcript(
         self,
@@ -771,8 +666,6 @@ class STTBot:
         path: Path | None,
         lines: list[str],
         entries: list[dict],
-        *,
-        reviewed: bool,
     ) -> None:
         """Post the session as a dated file rather than a wall of text.
 
@@ -781,16 +674,7 @@ class STTBot:
         own, and stays readable months later. The channel gets the file and a
         line saying what is in it.
         """
-        disputed = _disputed_count(entries)
-        if reviewed:
-            summary = [f"**Transcription (reviewed)** · {len(entries)} utterances"]
-            if disputed:
-                summary.append(f"{disputed} with a dispute")
-        else:
-            summary = [f"**Transcription** · {len(entries)} utterances"]
-            if disputed:
-                summary.append(f"{disputed} with a dispute")
-            summary.append("the review is running, a reviewed file will follow")
+        summary = [f"**Transcription** · {len(entries)} chunk(s)"]
         if path is None:
             # Writing the file failed, so post the text rather than nothing.
             await self._post_lines(channel, lines)
@@ -829,16 +713,12 @@ class STTBot:
         entries: list[dict],
         lines: list[str],
         stamp: datetime,
-        *,
-        reviewed: bool = False,
     ) -> Path | None:
         """Keep the reconciled text and the two readings it came from."""
         try:
             out_dir = Path(transcript_cfg.save_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
-            stem = f"transcription-{stamp:%Y-%m-%d-%H%M}" + (
-                "-reviewed" if reviewed else ""
-            )
+            stem = f"transcription-{stamp:%Y-%m-%d-%H%M}"
             # No counts line. The brackets are visible in the body, so the
             # tally told the reader nothing they could not see, and it was
             # wrong for a while besides. Blank lines between entries are what
