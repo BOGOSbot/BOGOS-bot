@@ -30,9 +30,17 @@ queue is drained, the buffer is flushed, and the tail is posted with the rest.
 
 Per-speaker chunks come out in completion order, not in the order they were
 spoken: the quiet player's last five minutes can be built before the talkative
-one's first. Every chunk carries the time its first utterance arrived, so the
-session is sorted back into that order before the file is written and the
-channel is posted to.
+one's first. Every chunk carries the time each of its utterances arrived, and
+where someone else cut in, so the session is sorted back into that order before
+the file is written and the channel is posted to.
+
+Sorting whole chunks by their first utterance is not enough, and it was measured
+rather than assumed: a chunk stays open until it holds a minute of speech, so a
+speaker whose turn ends and starts again while someone answers in between gets
+one chunk holding both turns, and dating it by its first utterance puts the
+second turn before the answer. On the 22:31 session that misplaced 90 of its 185
+seconds of speech. The chunker now records the boundary, and the reading is cut
+there, so each turn is placed at the time it was said.
 
 The hard ceiling is the provider's: a request body is capped at 20 MB and base64
 inflates by a third, so 16 kHz mono tops out near 7.8 minutes. The right size is

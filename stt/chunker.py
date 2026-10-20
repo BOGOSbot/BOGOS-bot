@@ -43,6 +43,15 @@ class Chunk:
     # the pipeline in completion order, not in the order they were spoken.
     # This is what puts the session back in order at the end.
     started_at: float = 0.0
+    # When each of its utterances arrived, in order. A speaker's turn can end
+    # and start again while their buffer stays open - A says something, B
+    # answers, A carries on - so the first utterance is not where all of the
+    # chunk belongs. These are what put each block back where it was said.
+    utterance_starts: tuple[float, ...] = ()
+    # The utterance indices at which someone else spoke. Those are the real
+    # turn boundaries inside the chunk: everything between two of them is one
+    # stretch of this speaker, and belongs at its own time.
+    turn_breaks: tuple[int, ...] = ()
 
 
 @dataclass
@@ -52,6 +61,9 @@ class _Pending:
     seconds: float = 0.0
     utterances: int = 0
     started_at: float = 0.0
+    utterance_starts: list[float] = field(default_factory=list)
+    turn_breaks: list[int] = field(default_factory=list)
+    interrupted: bool = False
 
 
 def _silence(seconds: float) -> bytes:
@@ -93,6 +105,14 @@ class AudioChunker:
         seconds = len(pcm) / (
             audio_cfg.output_sample_rate * audio_cfg.sample_width
         )
+        # Someone else speaking ends this speaker's turn. The buffer stays open
+        # so the model keeps the context, but the boundary is recorded here:
+        # without it the whole chunk is dated by its first utterance and this
+        # speaker's second turn reads as if it came before the answer.
+        for other, other_state in self._pending.items():
+            if other != user_id and other_state.utterances:
+                other_state.interrupted = True
+
         state = self._pending.get(user_id)
         finished: Chunk | None = None
         if state is None:
@@ -124,9 +144,16 @@ class AudioChunker:
         if state.utterances:
             state.parts.append(_silence(stt_cfg.chunk_gap_seconds))
             state.seconds += stt_cfg.chunk_gap_seconds
+            # The flag was set while this speaker was silent, and it only
+            # becomes a boundary now that they have said something else. A
+            # chunk that never resumes has no second turn to date.
+            if state.interrupted:
+                state.turn_breaks.append(state.utterances)
+                state.interrupted = False
         state.parts.append(pcm)
         state.seconds += seconds
         state.utterances += 1
+        state.utterance_starts.append(started_at)
 
         # A chunk that was just opened holds one utterance, and the VAD never
         # emits one long enough to fill a chunk on its own, so the two cannot
@@ -161,6 +188,8 @@ class AudioChunker:
             seconds=state.seconds,
             utterances=state.utterances,
             started_at=state.started_at,
+            utterance_starts=tuple(state.utterance_starts),
+            turn_breaks=tuple(state.turn_breaks),
         )
 
 

@@ -480,27 +480,43 @@ class STTBot:
         if self._transcript_channel is None:
             return  # no active session; the log line is the only trace
 
-        # One line per chunk, one reading. A chunk is several minutes of one
-        # speaker, so "**Name** :" is the whole label needed; there is no second
-        # reading to bracket and no reconciler to move the speaker's name out of
-        # the way. The blank line between entries is what keeps Discord from
-        # running them together into one paragraph.
-        line = f"**{name}** : {text}"
-        self._session_lines.append(line)
-        self._session_raw.append((name, text))
-        self._entries.append(
-            {
-                "name": name,
-                "text": text,
-                "seconds": result.get("seconds"),
-                "started_at": result.get("started_at"),
-                "line": line,
-            }
-        )
-        # Written now, not at the end. A session can run for hours, and the
-        # transcript that exists is worth more than the one still in memory if
-        # the process dies or the machine sleeps.
-        self._append_to_session(line)
+        # One line per block, one reading. A chunk is one speaker's utterances,
+        # but their turn can end and start again while their buffer stays open,
+        # so the transcriber dates each block and the session is rebuilt from
+        # those times rather than from the chunk. "**Name** :" is the whole
+        # label needed; the blank line between entries is what keeps Discord
+        # from running them together into one paragraph.
+        for at, body in self._blocks_of(result, text):
+            line = f"**{name}** : {body}"
+            self._session_lines.append(line)
+            self._session_raw.append((name, body))
+            self._entries.append(
+                {
+                    "name": name,
+                    "text": body,
+                    "seconds": result.get("seconds"),
+                    "started_at": at,
+                    "line": line,
+                }
+            )
+            # Written now, not at the end. A session can run for hours, and the
+            # transcript that exists is worth more than the one still in memory
+            # if the process dies or the machine sleeps.
+            self._append_to_session(line)
+
+    @staticmethod
+    def _blocks_of(result: dict, text: str) -> list[tuple[float | None, str]]:
+        """The reading split by when it was said, or whole when it has no clock.
+
+        The transcriber dates each block from the times the chunker recorded. A
+        chunk with no timeline - an older worker, a stub in a test, a chunker
+        that never learned when its utterances arrived - stays whole and keeps
+        the chunk's own start, which is the behaviour this replaced.
+        """
+        segments = result.get("segments")
+        if segments:
+            return list(segments)
+        return [(result.get("started_at"), text)]
 
     def _speaker_name(self, user_id: object) -> str:
         """Resolve a Discord user id to a display name, with caching."""
@@ -782,7 +798,7 @@ class STTBot:
             )
             payload = {
                 "started": stamp.isoformat(),
-                "utterances": len(entries),
+                "blocks": len(entries),
                 "final_lines": len(lines),
                 "entries": entries,
             }
