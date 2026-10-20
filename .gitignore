@@ -17,6 +17,10 @@ venv/
 transcripts/
 dumps/
 
+# Build output. The term corpus is regenerated from a rules export in about a
+# second, so what is kept is the process, not the files.
+workspace/
+
 # Session audio: these are other people's voices, never commit them.
 RECORD_DIR/
 corpus/
