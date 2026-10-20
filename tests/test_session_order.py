@@ -1,19 +1,17 @@
-"""A session reads in the order it was spoken, not the order it was built.
+"""A session reads in the order it was spoken, and every line says when.
 
-Chunks are per speaker, and each speaker's buffer fills at their own rate, so
-the quiet player's last five minutes can be transcribed before the talkative
-one's first. Grouped by speaker is how the pipeline produces them; a
-conversation is how they were said.
+A chunk is one turn, so it is emitted when the next speaker starts: the order
+the chunks come out of the pipeline is already the order of the conversation.
+Each still carries the wall-clock time of its first utterance, because a worker
+finishes when it finishes, and because the line prints that time.
 """
 
-from bot.client import STTBot, in_arrival_order
+from datetime import datetime
+
+from bot.client import _clock, in_arrival_order
 from stt.chunker import AudioChunker
-from stt.gemini_transcriber import GeminiTranscriber, timed_segments, utterance_seconds
 
-from tests.test_chunk_completeness import _bare_processor, _pcm
-
-# Long enough to be cut, and varied, so the runaway check has nothing to say.
-SPEECH = " ".join("Phrase %d qui compte plusieurs mots de plus." % i for i in range(12))
+from tests.test_chunk_completeness import _pcm
 
 
 def _entry(name, started_at):
@@ -49,136 +47,32 @@ def test_a_chunk_without_a_time_reports_zero():
     assert chunker.flush()[0].started_at == 0.0
 
 
-# -- a chunk that spans two turns ---------------------------------------------
-# The chunker's buffer is per speaker and closes on 60s of audio or a 90s span,
-# so a speaker whose turn ends and starts again while someone answers in between
-# gets one chunk holding both turns. Dating that chunk by its first utterance is
-# what put A's second turn before B's answer: measured on the 22:31 session, 99
-# of its 199 seconds of speech provably sat before speech that came later.
+# -- the stamp on the line ----------------------------------------------------
 
 
-def _resumed_turn():
-    """A speaks, B answers, A carries on: two chunks, and one of them spans it."""
-    chunker = AudioChunker(target_seconds=300, max_seconds=450, max_span_seconds=90)
-    chunker.add(1, _pcm(10), started_at=1000.0)
-    chunker.add(2, _pcm(2), started_at=1010.0)
-    chunker.add(1, _pcm(10), started_at=1020.0)
-    chunks = {chunk.user_id: chunk for chunk in chunker.flush()}
-    return chunks[1], chunks[2]
+def test_every_line_says_when_it_started():
+    """No guesswork to audit: the reader can see the order the bot used."""
+    at = datetime(2026, 10, 20, 22, 51, 7).timestamp()
+    assert _clock(at) == "22:51:07"
 
 
-def test_a_chunk_remembers_when_each_utterance_arrived():
-    chunk = _resumed_turn()[0]
-    assert chunk.started_at == 1000.0
-    assert chunk.utterance_starts == (1000.0, 1020.0)
+def test_a_line_with_no_clock_prints_no_stamp():
+    """A zero would read as midnight, which is a claim the worker did not make."""
+    assert _clock(0.0) == ""
+    assert _clock(None) == ""
+    assert _clock("not a time") == ""
 
 
-def test_a_chunk_remembers_where_someone_else_cut_in():
-    """The turn boundary is the whole point: it is where the chunk must split."""
-    chunk = _resumed_turn()[0]
-    assert chunk.turn_breaks == (1,), "B answered between A's two utterances"
-    assert _resumed_turn()[1].turn_breaks == ()
+def test_the_turns_come_out_in_the_order_they_were_said():
+    """One turn each, emitted as the next speaker starts, so the order is exact."""
+    chunker = AudioChunker(target_seconds=300, max_seconds=450)
+    said = [(1, 1000.0), (2, 1010.0), (1, 1020.0), (3, 1030.0), (2, 1040.0)]
+    emitted = []
+    for user_id, at in said:
+        emitted += chunker.add(user_id, _pcm(4), started_at=at)
+    emitted += chunker.flush()
 
-
-def test_a_turn_that_resumes_inside_one_chunk_is_dated_twice():
-    chunk = _resumed_turn()[0]
-    segments = timed_segments(
-        SPEECH, utterance_seconds(chunk.pcm), chunk.utterance_starts, chunk.turn_breaks
-    )
-    assert len(segments) == 2, "one chunk, two turns"
-    assert segments[0][0] == 1000.0
-    assert segments[-1][0] == 1020.0, "the second turn keeps its own time"
-
-
-def test_every_turn_inside_one_chunk_keeps_its_own_time():
-    """A, B, A, C, A: three turns in one buffer, and three times to place them."""
-    chunker = AudioChunker(target_seconds=300, max_seconds=450, max_span_seconds=90)
-    chunker.add(1, _pcm(6), started_at=1000.0)
-    chunker.add(2, _pcm(2), started_at=1010.0)
-    chunker.add(1, _pcm(6), started_at=1020.0)
-    chunker.add(3, _pcm(2), started_at=1030.0)
-    chunker.add(1, _pcm(6), started_at=1040.0)
-    chunk = {c.user_id: c for c in chunker.flush()}[1]
-
-    assert chunk.utterance_starts == (1000.0, 1020.0, 1040.0)
-    assert chunk.turn_breaks == (1, 2)
-    segments = timed_segments(
-        SPEECH, utterance_seconds(chunk.pcm), chunk.utterance_starts, chunk.turn_breaks
-    )
-    assert [at for at, _body in segments] == [1000.0, 1020.0, 1040.0]
-
-
-def test_the_session_reads_as_a_conversation_not_as_blocks():
-    """Without the split this is A then B, and A's second turn is lost in A's first."""
-    entries = []
-    for chunk in _resumed_turn():
-        result = {
-            "text": SPEECH,
-            "started_at": chunk.started_at,
-            "segments": timed_segments(
-                SPEECH, utterance_seconds(chunk.pcm), chunk.utterance_starts
-            ),
-        }
-        for at, _body in STTBot._blocks_of(result, SPEECH):
-            entries.append(_entry("A" if chunk.user_id == 1 else "B", at))
-    assert [e["name"] for e in in_arrival_order(entries)] == ["A", "B", "A"]
-
-
-def test_the_transcriber_dates_its_own_reading():
-    chunk = _resumed_turn()[0]
-    transcriber = GeminiTranscriber(model="test/model")
-    transcriber._ask = lambda prompt, pcm: {
-        "text": SPEECH,
-        "latency": 0.1,
-        "cost": 0.0,
-        "durations": utterance_seconds(pcm),
-    }
-    result = transcriber.transcribe(1, chunk.pcm, starts=chunk.utterance_starts)
-    assert [at for at, _ in result["segments"]] == [1000.0, 1020.0]
-
-
-# -- when there is no timeline to trust ---------------------------------------
-
-
-def test_a_timeline_that_starts_at_zero_is_not_trusted():
-    """A chunker that never learned when anything arrived dates nothing."""
-    assert timed_segments("Une. Deux.", [1.0, 1.0], (0.0, 1.0)) == []
-
-
-def test_a_timeline_of_the_wrong_length_is_not_trusted():
-    assert timed_segments("Une. Deux.", [1.0, 1.0], (5.0,)) == []
-
-
-def test_a_reading_with_no_timeline_is_left_whole():
-    result = {"text": "Bonjour.", "started_at": 42.0}
-    assert STTBot._blocks_of(result, "Bonjour.") == [(42.0, "Bonjour.")]
-
-
-def test_a_dated_reading_is_split_by_time():
-    result = {"segments": [(1000.0, "Une."), (1020.0, "Deux.")]}
-    assert STTBot._blocks_of(result, "Une. Deux.") == [
-        (1000.0, "Une."),
-        (1020.0, "Deux."),
-    ]
-
-
-def test_the_worker_hands_the_timeline_to_the_transcriber():
-    """The queue item grew a field; only a run exercises its arity."""
-    processor = _bare_processor([])
-    seen = {}
-
-    class _Stub:
-        def transcribe(self, user_id, audio, starts=(), turn_breaks=()):
-            seen["starts"] = starts
-            seen["breaks"] = turn_breaks
-            return None
-
-    processor._transcriber = _Stub()
-    processor._deliver = lambda seq, result: None
-    processor._utterances.put(
-        (1, 7, _pcm(2), 2.0, 1000.0, ((1000.0, 1001.0), (1,)))
-    )
-    processor._utterances.put(None)
-    processor._transcribe_loop()
-    assert seen["starts"] == (1000.0, 1001.0)
-    assert seen["breaks"] == (1,)
+    assert [(c.user_id, c.started_at) for c in emitted] == said
+    assert [e["name"] for e in in_arrival_order(
+        [_entry(str(c.user_id), c.started_at) for c in emitted]
+    )] == ["1", "2", "1", "3", "2"]

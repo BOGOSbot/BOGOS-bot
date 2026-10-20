@@ -116,10 +116,9 @@ class STTProcessor:
         self._dropped_quiet = 0
         self._dropped_short = 0
 
-        # Chunks waiting for a worker: (seq, user_id, pcm, seconds, started_at,
-        # (utterance_starts, turn_breaks)). Unbounded on purpose: falling behind
-        # must delay the transcript, never lose speech.
-        self._utterances: "queue.Queue[Optional[Tuple[int, int, bytes, float, float, tuple]]]" = queue.Queue()
+        # Utterances waiting for a worker: (seq, user_id, pcm). Unbounded on
+        # purpose: falling behind must delay the transcript, never lose speech.
+        self._utterances: "queue.Queue[Optional[Tuple[int, int, bytes, float]]]" = queue.Queue()
         self._workers: list[threading.Thread] = []
         self._warned_at = 0
 
@@ -180,12 +179,9 @@ class STTProcessor:
                 self._utterances.task_done()
                 return
 
-            seq, user_id, audio, seconds, started_at, timeline = item
-            starts, turn_breaks = timeline
+            seq, user_id, audio, seconds, started_at = item
             try:
-                result = self._transcriber.transcribe(
-                    user_id, audio, starts=starts, turn_breaks=turn_breaks
-                )
+                result = self._transcriber.transcribe(user_id, audio)
                 if result and not self._plausible(result, audio):
                     result = None  # Guard 3: invented, whatever its level.
                 if result and artifacts.is_artifact(result.get("text", "")):
@@ -198,7 +194,6 @@ class STTProcessor:
                     result["seq"] = seq
                     result["seconds"] = round(seconds, 1)
                     result["started_at"] = started_at
-                    result["utterance_starts"] = list(starts)
                     result.setdefault("name", self._names.get(user_id, ""))
                 else:
                     logger.warning(
@@ -298,8 +293,7 @@ class STTProcessor:
         # Guard 2: level the utterance before it is sent.
         audio = _normalise(samples, stt_cfg.normalize_dbfs, stt_cfg.max_gain_db)
 
-        chunk = self._chunker.add(user_id, audio, started_at)
-        if chunk is not None:
+        for chunk in self._chunker.add(user_id, audio, started_at):
             self._emit_chunk(chunk)
 
     def _emit_chunk(self, chunk) -> None:
@@ -319,7 +313,6 @@ class STTProcessor:
                 chunk.pcm,
                 chunk.seconds,
                 chunk.started_at,
-                (chunk.utterance_starts, chunk.turn_breaks),
             )
         )
 

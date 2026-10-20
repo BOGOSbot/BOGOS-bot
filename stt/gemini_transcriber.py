@@ -189,75 +189,57 @@ def utterance_seconds(pcm: bytes) -> list[float]:
     return [seconds for seconds in out if seconds > 0]
 
 
-def _blocks_by_time(
-    text: str, durations: list[float], breaks: tuple[int, ...] | list[int] = ()
-) -> list[tuple[float, str]]:
-    """Put the breaks where the speaker actually paused, and date each block.
+def _blocks_by_time(text: str, durations: list[float]) -> str:
+    """Put the breaks where the speaker actually paused.
 
     A wall of text and a list of how long each utterance took are enough to
     line the two up: walk the sentences, and cut where the running share of the
     words reaches the running share of the seconds. Snapped to sentence ends,
     so nothing is cut in half, and lossless, so no word moves.
-
-    Each block carries the seconds of speech that came before it, which is what
-    turns a block back into the wall-clock time it was said at.
     """
     groups, current = [], 0.0
-    if breaks:
-        # The real turn boundaries, when the chunker recorded them: everything
-        # between two of them is one stretch of this speaker.
-        previous = 0
-        for stop in sorted({b for b in breaks if 0 < b < len(durations)} | {len(durations)}):
-            if stop > previous:
-                groups.append(sum(durations[previous:stop]))
-                previous = stop
-    else:
-        for seconds in durations:
-            current += seconds
-            if current >= MIN_BLOCK_SECONDS:
-                groups.append(current)
-                current = 0.0
-        if current:
-            if groups:
-                groups[-1] += current
-            else:
-                groups.append(current)
+    for seconds in durations:
+        current += seconds
+        if current >= MIN_BLOCK_SECONDS:
+            groups.append(current)
+            current = 0.0
+    if current:
+        if groups:
+            groups[-1] += current
+        else:
+            groups.append(current)
     if len(groups) < 2:
-        return []
+        return ""
 
     sentences = [s.strip() for s in _SENTENCE_END.sub(r"\1\n", text).split("\n") if s.strip()]
     if len(sentences) < 2:
-        return []
+        return ""
     counts = [len(s.split()) for s in sentences]
     total = sum(counts)
     if total == 0:
-        return []
+        return ""
 
     cuts, running = [], 0.0
     for seconds in groups[:-1]:
         running += seconds
         cuts.append(running / sum(groups))
 
-    out, offsets, elapsed, seen, index = [], [0.0], 0.0, 0, 0
-    for seconds, cut in zip(groups[:-1], cuts):
-        elapsed += seconds
+    out, seen, index = [], 0, 0
+    for cut in cuts:
         target = cut * total
         while index < len(sentences) - 1 and seen + counts[index] < target:
             seen += counts[index]
             index += 1
         if index + 1 < len(sentences) and index + 1 not in out:
             out.append(index + 1)
-            offsets.append(elapsed)
     if not out:
-        return []
+        return ""
 
     blocks, previous = [], 0
-    for stop, offset in zip(out + [len(sentences)], offsets):
-        body = " ".join(sentences[previous:stop])
-        if body:
-            blocks.append((offset, body))
+    for stop in out + [len(sentences)]:
+        blocks.append(" ".join(sentences[previous:stop]))
         previous = stop
-    return blocks
+    return "\n\n".join(b for b in blocks if b)
 
 
 def _blocks(text: str) -> str:
@@ -293,46 +275,8 @@ def tidy(text: str, durations: list[float] | None = None) -> str:
     if durations:
         timed = _blocks_by_time(body, durations)
         if timed:
-            return "\n\n".join(block for _, block in timed)
+            return timed
     return _blocks(body)
-
-
-def timed_segments(
-    text: str,
-    durations: list[float],
-    starts: tuple[float, ...] | list[float],
-    breaks: tuple[int, ...] | list[int] = (),
-) -> list[tuple[float, str]]:
-    """Cut a reading back into the times it was actually said.
-
-    A chunk is one speaker's utterances, but a turn can end and start again
-    while their buffer stays open: A says something, B answers, A carries on,
-    and all of it lands in one chunk because the buffer never filled. Placing
-    that chunk at its first utterance puts A's second turn before B's answer,
-    which is what made a session read as one speaker at a time. The chunker
-    knows when every utterance arrived, so the reading is cut at the sentence
-    ends nearest those times and each block takes the time of the utterance it
-    begins at.
-
-    Empty when there is no timeline to trust: no starts, or starts that begin at
-    zero, which is a chunker that never learned when anything arrived. The
-    caller then keeps the chunk whole, in the order it arrived.
-    """
-    if not starts or not durations or starts[0] <= 0:
-        return []
-    if len(starts) != len(durations):
-        return []
-    blocks = _blocks_by_time(text, durations, breaks)
-    if not blocks:
-        return []
-
-    out, index, elapsed = [], 0, 0.0
-    for offset, body in blocks:
-        while index < len(durations) - 1 and elapsed + durations[index] <= offset:
-            elapsed += durations[index]
-            index += 1
-        out.append((starts[index], body))
-    return out
 
 
 def _halves(pcm: bytes) -> tuple[bytes, bytes]:
@@ -374,12 +318,7 @@ class GeminiTranscriber:
         return self._model
 
     def transcribe(
-        self,
-        user_id: int,
-        pcm: bytes,
-        depth: int = 0,
-        starts: tuple[float, ...] = (),
-        turn_breaks: tuple[int, ...] = (),
+        self, user_id: int, pcm: bytes, depth: int = 0
     ) -> dict[str, Any] | None:
         seconds = len(pcm) / (
             audio_cfg.output_sample_rate * audio_cfg.sample_width
@@ -388,7 +327,7 @@ class GeminiTranscriber:
         if best is not None and looks_complete(
             best["text"], seconds, best.get("truncated", False)
         ):
-            return self._timed(best, starts, turn_breaks)
+            return best
 
         if depth >= MAX_SPLIT_DEPTH or seconds < MIN_SPLIT_SECONDS:
             if best is not None:
@@ -398,35 +337,16 @@ class GeminiTranscriber:
                     seconds,
                     len(best["text"].split()),
                 )
-            return self._timed(best, starts, turn_breaks)
+            return best
 
         started = time.perf_counter()
-        left, right = _halves(pcm)
-        # Each half holds a prefix of the utterances, so the timeline splits
-        # where the audio does and every block keeps its own time.
-        cut = len(utterance_seconds(left))
         pieces = [
-            piece
-            for piece in (
-                self.transcribe(
-                    user_id,
-                    left,
-                    depth + 1,
-                    tuple(starts[:cut]),
-                    tuple(b for b in turn_breaks if b < cut),
-                ),
-                self.transcribe(
-                    user_id,
-                    right,
-                    depth + 1,
-                    tuple(starts[cut:]),
-                    tuple(b - cut for b in turn_breaks if b >= cut),
-                ),
-            )
-            if piece
+            self.transcribe(user_id, half, depth + 1)
+            for half in _halves(pcm)
         ]
+        pieces = [piece for piece in pieces if piece]
         if not pieces:
-            return self._timed(best, starts, turn_breaks)
+            return best
 
         text = " ".join(piece["text"] for piece in pieces)
         recovered = {
@@ -435,9 +355,6 @@ class GeminiTranscriber:
             "cost": sum(piece.get("cost") or 0.0 for piece in pieces),
             "attempts": sum(piece.get("attempts") or 1 for piece in pieces),
             "split": True,
-            "segments": [
-                segment for piece in pieces for segment in piece.get("segments", [])
-            ],
         }
         if (
             looks_complete(text, seconds)
@@ -451,23 +368,7 @@ class GeminiTranscriber:
                 len(text.split()),
             )
             return recovered
-        return self._timed(best, starts, turn_breaks)
-
-    def _timed(
-        self,
-        result: dict[str, Any] | None,
-        starts,
-        turn_breaks: tuple[int, ...] = (),
-    ) -> dict[str, Any] | None:
-        """Date every block of a reading, when the chunker said when it arrived."""
-        if result is None or not starts:
-            return result
-        segments = timed_segments(
-            result["text"], result.get("durations") or [], starts, turn_breaks
-        )
-        if segments:
-            result["segments"] = segments
-        return result
+        return best
 
     def _read_until_complete(self, pcm: bytes, seconds: float) -> dict[str, Any] | None:
         """Ask the whole chunk, then ask it again differently."""
@@ -563,8 +464,7 @@ class GeminiTranscriber:
 
         choice = (data.get("choices") or [{}])[0]
         text = (choice.get("message") or {}).get("content")
-        durations = utterance_seconds(pcm)
-        text = tidy(text or "", durations)
+        text = tidy(text or "", utterance_seconds(pcm))
         usage = data.get("usage") or {}
         if not text:
             logger.warning(
@@ -576,5 +476,4 @@ class GeminiTranscriber:
             "latency": round(time.perf_counter() - started, 3),
             "cost": usage.get("cost"),
             "truncated": choice.get("finish_reason") == "length",
-            "durations": durations,
         }

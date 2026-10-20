@@ -75,6 +75,21 @@ def in_arrival_order(entries: list[dict]) -> list[dict]:
     return sorted(entries, key=lambda entry: entry["started_at"])
 
 
+def _clock(at: object) -> str:
+    """The wall-clock time a chunk's first utterance arrived, to the second.
+
+    Local time, because the reader is the one comparing it against their own
+    memory of the meeting. Empty when the worker did not say, so a missing clock
+    drops the stamp rather than printing the epoch as a time of day.
+    """
+    if not at:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(at)).strftime("%H:%M:%S")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+
 def _short_model(model: str) -> str:
     """mistralai/voxtral-small-24b-2507-stt -> voxtral, for a readable label."""
     tail = (model or "").rsplit("/", 1)[-1]
@@ -480,43 +495,29 @@ class STTBot:
         if self._transcript_channel is None:
             return  # no active session; the log line is the only trace
 
-        # One line per block, one reading. A chunk is one speaker's utterances,
-        # but their turn can end and start again while their buffer stays open,
-        # so the transcriber dates each block and the session is rebuilt from
-        # those times rather than from the chunk. "**Name** :" is the whole
-        # label needed; the blank line between entries is what keeps Discord
-        # from running them together into one paragraph.
-        for at, body in self._blocks_of(result, text):
-            line = f"**{name}** : {body}"
-            self._session_lines.append(line)
-            self._session_raw.append((name, body))
-            self._entries.append(
-                {
-                    "name": name,
-                    "text": body,
-                    "seconds": result.get("seconds"),
-                    "started_at": at,
-                    "line": line,
-                }
-            )
-            # Written now, not at the end. A session can run for hours, and the
-            # transcript that exists is worth more than the one still in memory
-            # if the process dies or the machine sleeps.
-            self._append_to_session(line)
-
-    @staticmethod
-    def _blocks_of(result: dict, text: str) -> list[tuple[float | None, str]]:
-        """The reading split by when it was said, or whole when it has no clock.
-
-        The transcriber dates each block from the times the chunker recorded. A
-        chunk with no timeline - an older worker, a stub in a test, a chunker
-        that never learned when its utterances arrived - stays whole and keeps
-        the chunk's own start, which is the behaviour this replaced.
-        """
-        segments = result.get("segments")
-        if segments:
-            return list(segments)
-        return [(result.get("started_at"), text)]
+        # One line per turn, one reading, with the time it started. A chunk is
+        # one turn of one speaker, so the line needs no guessing to be placed:
+        # the stamp is the arrival time of its first utterance, and reading the
+        # file in order is reading the conversation in order. The blank line
+        # between entries is what keeps Discord from running them together into
+        # one paragraph.
+        clock = _clock(result.get("started_at"))
+        line = f"**{name}** ({clock}) : {text}" if clock else f"**{name}** : {text}"
+        self._session_lines.append(line)
+        self._session_raw.append((name, text))
+        self._entries.append(
+            {
+                "name": name,
+                "text": text,
+                "seconds": result.get("seconds"),
+                "started_at": result.get("started_at"),
+                "line": line,
+            }
+        )
+        # Written now, not at the end. A session can run for hours, and the
+        # transcript that exists is worth more than the one still in memory if
+        # the process dies or the machine sleeps.
+        self._append_to_session(line)
 
     def _speaker_name(self, user_id: object) -> str:
         """Resolve a Discord user id to a display name, with caching."""

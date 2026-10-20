@@ -1,16 +1,25 @@
-"""Collect utterances into chunks large enough to transcribe well.
+"""Collect utterances into chunks that are one turn of one speaker.
 
-A transcription per utterance wastes the model. Gemini reads a whole exchange
-better than a sentence: given five minutes it keeps the thread, spells the game's
-proper nouns the way the speaker did, and costs the same per second of audio as
-it would on fragments. It also removes the reason the pipeline once carried two
-models and a reconciler, because the reading stops being wrong in the first
-place.
+A transcription per utterance wastes the model. Gemini reads a stretch of speech
+better than a sentence: it keeps the thread, spells the game's proper nouns the
+way the speaker did, and costs the same per second of audio as it would on
+fragments. It also removes the reason the pipeline once carried two models and a
+reconciler, because the reading stops being wrong in the first place.
 
-The size is set by the provider, not by preference. A request body is capped at
-20 MB and base64 inflates by a third, so 16 kHz mono tops out near 7.8 minutes.
-Five minutes encodes to 12.8 MB, which leaves room, and it is long enough that
-the model sees a conversation rather than a line.
+A chunk is one turn, and that is what makes its time exact. The buffer closes
+when someone else speaks, so everything in it was said in one stretch: nothing
+has to be split back out to be placed in the session, and no sentence can land
+on the wrong side of an answer. Holding the buffer open across an answer gives
+the model more context and leaves no way to say which part of the reading came
+before the answer. Measured on the 22:51 session, a 47s buffer of one speaker
+became five blocks placed by proportion, and that is where sentences came out
+inverted.
+
+The provider ceiling is not what sets the size. A request body is capped at 20 MB
+and base64 inflates by a third, so 16 kHz mono tops out near 7.8 minutes, and
+the targets below that were measured. What sets the size here is the turn; the
+target and the span remain as a backstop for a speaker who talks for minutes
+without being interrupted.
 
 Chunks are kept per speaker. Concatenating two people into one stream would let
 the model read the dialogue, but it would also lose who said what, and a
@@ -43,15 +52,6 @@ class Chunk:
     # the pipeline in completion order, not in the order they were spoken.
     # This is what puts the session back in order at the end.
     started_at: float = 0.0
-    # When each of its utterances arrived, in order. A speaker's turn can end
-    # and start again while their buffer stays open - A says something, B
-    # answers, A carries on - so the first utterance is not where all of the
-    # chunk belongs. These are what put each block back where it was said.
-    utterance_starts: tuple[float, ...] = ()
-    # The utterance indices at which someone else spoke. Those are the real
-    # turn boundaries inside the chunk: everything between two of them is one
-    # stretch of this speaker, and belongs at its own time.
-    turn_breaks: tuple[int, ...] = ()
 
 
 @dataclass
@@ -61,9 +61,6 @@ class _Pending:
     seconds: float = 0.0
     utterances: int = 0
     started_at: float = 0.0
-    utterance_starts: list[float] = field(default_factory=list)
-    turn_breaks: list[int] = field(default_factory=list)
-    interrupted: bool = False
 
 
 def _silence(seconds: float) -> bytes:
@@ -100,21 +97,26 @@ class AudioChunker:
 
     def add(
         self, user_id: int, pcm: bytes, started_at: float = 0.0
-    ) -> Chunk | None:
-        """Append one utterance; return a chunk when the buffer is full."""
+    ) -> list[Chunk]:
+        """Append one utterance; return whatever that closes.
+
+        Someone else speaking ends this speaker's turn, so their buffer closes
+        with it. That is what keeps a chunk to one turn, and a chunk that is one
+        turn needs no guessing to be placed: its time is the time its first
+        utterance arrived.
+        """
         seconds = len(pcm) / (
             audio_cfg.output_sample_rate * audio_cfg.sample_width
         )
-        # Someone else speaking ends this speaker's turn. The buffer stays open
-        # so the model keeps the context, but the boundary is recorded here:
-        # without it the whole chunk is dated by its first utterance and this
-        # speaker's second turn reads as if it came before the answer.
-        for other, other_state in self._pending.items():
-            if other != user_id and other_state.utterances:
-                other_state.interrupted = True
+        closed: list[Chunk] = []
+        for other in list(self._pending):
+            if other == user_id:
+                continue
+            answered = self._take(other)
+            if answered:
+                closed.append(answered)
 
         state = self._pending.get(user_id)
-        finished: Chunk | None = None
         if state is None:
             state = self._pending[user_id] = _Pending(
                 seq=self._next_seq, started_at=started_at
@@ -136,7 +138,9 @@ class AudioChunker:
                 state.utterances,
                 state.seconds,
             )
-            finished = self._take(user_id)
+            flushed = self._take(user_id)
+            if flushed:
+                closed.append(flushed)
             state = self._pending[user_id] = _Pending(
                 seq=self._next_seq, started_at=started_at
             )
@@ -144,23 +148,15 @@ class AudioChunker:
         if state.utterances:
             state.parts.append(_silence(stt_cfg.chunk_gap_seconds))
             state.seconds += stt_cfg.chunk_gap_seconds
-            # The flag was set while this speaker was silent, and it only
-            # becomes a boundary now that they have said something else. A
-            # chunk that never resumes has no second turn to date.
-            if state.interrupted:
-                state.turn_breaks.append(state.utterances)
-                state.interrupted = False
         state.parts.append(pcm)
         state.seconds += seconds
         state.utterances += 1
-        state.utterance_starts.append(started_at)
 
-        # A chunk that was just opened holds one utterance, and the VAD never
-        # emits one long enough to fill a chunk on its own, so the two cannot
-        # both fire.
-        if finished is None and state.seconds >= self._target:
-            return self._take(user_id)
-        return finished
+        if state.seconds >= self._target:
+            flushed = self._take(user_id)
+            if flushed:
+                closed.append(flushed)
+        return closed
 
     def flush(self) -> list[Chunk]:
         """Everything still buffered, for a stop or a disconnect."""
@@ -188,8 +184,6 @@ class AudioChunker:
             seconds=state.seconds,
             utterances=state.utterances,
             started_at=state.started_at,
-            utterance_starts=tuple(state.utterance_starts),
-            turn_breaks=tuple(state.turn_breaks),
         )
 
 

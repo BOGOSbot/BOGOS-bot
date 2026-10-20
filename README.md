@@ -28,19 +28,18 @@ Each chunk is written to the channel file as it lands, so a two-hour session is
 settled as it runs rather than in one wait at the end. At `!stop` the audio
 queue is drained, the buffer is flushed, and the tail is posted with the rest.
 
-Per-speaker chunks come out in completion order, not in the order they were
-spoken: the quiet player's last five minutes can be built before the talkative
-one's first. Every chunk carries the time each of its utterances arrived, and
-where someone else cut in, so the session is sorted back into that order before
-the file is written and the channel is posted to.
+A chunk is one turn of one speaker. The buffer closes when someone else speaks,
+so everything in a chunk was said in one stretch, its time is the time its first
+utterance arrived, and every line prints that time. The session is sorted by it
+before the file is written and the channel is posted to.
 
-Sorting whole chunks by their first utterance is not enough, and it was measured
-rather than assumed: a chunk stays open until it holds a minute of speech, so a
-speaker whose turn ends and starts again while someone answers in between gets
-one chunk holding both turns, and dating it by its first utterance puts the
-second turn before the answer. On the 22:31 session that misplaced 90 of its 185
-seconds of speech. The chunker now records the boundary, and the reading is cut
-there, so each turn is placed at the time it was said.
+Holding the buffer open across an answer gives the model more context and leaves
+no way to say which part of the reading came before the answer. Measured on the
+22:51 session, a 47 second buffer of one speaker came back as five blocks placed
+by proportion, and sentences landed on the wrong side of someone else's turn. A
+turn-sized chunk needs no such guess. The cost is more requests: on a four
+speaker meeting the median chunk goes from 27 seconds to 9, and there are about
+1.6 times as many of them.
 
 The hard ceiling is the provider's: a request body is capped at 20 MB and base64
 inflates by a third, so 16 kHz mono tops out near 7.8 minutes. The right size is
