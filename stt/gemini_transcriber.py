@@ -14,6 +14,10 @@ predictable from the audio, and it is not a size problem: sweeping the same
 each size, and every one of them was recovered by asking about part of the
 chunk instead. The same audio asked the same way stops in the same place.
 
+The opposite failure costs more. A 99s clip from this bot ran to the token cap
+writing "Hmm." over and over, one call at $0.010. A runaway is not a reading of
+the audio either, and the same check catches both.
+
 So the reading is checked here, where the audio length is known, and re-asked
 twice over: once with a prompt that says what to do rather than what not to do,
 and if that fails, in halves, recursively.
@@ -27,6 +31,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from typing import Any
 
 from config import audio_cfg, stt_cfg
@@ -61,6 +66,17 @@ MIN_RATE_SECONDS = 10.0
 # not one word of speech.
 _TIMESTAMPS = re.compile(r"^(\d{1,2}:\d{2}\s*)+$")
 
+# The opposite failure: the model never stops. Measured in the rules
+# repository's voice benchmark on this bot's own recordings, a 99s clip ran to
+# the token cap writing "Hmm." and cost $0.010 for the one call. The tell is the
+# share of the reading its most common unit carries, not its length. Both floors
+# are high on purpose: table talk really does repeat "Oui." a few times, and six
+# of those is not a loop.
+REPEAT_MIN_UNITS = 8
+REPEAT_UNIT_SHARE = 0.6
+REPEAT_MIN_WORDS = 40
+REPEAT_WORD_SHARE = 0.5
+
 # Appended on the second attempt. The first prompt says what not to do; this
 # one says what to do, which is the instruction the early stop ignores.
 RETRY_SUFFIX = " Transcribe every sentence, from the first word to the last."
@@ -92,14 +108,54 @@ GAP_SECONDS = 0.3
 MIN_BLOCK_SECONDS = 8.0
 
 
-def looks_complete(text: str, seconds: float) -> bool:
-    """Could this be a full reading of that much audio?"""
+def repeats_itself(text: str) -> bool:
+    """Is the model looping on one unit instead of reading the audio?
+
+    A runaway is mostly one thing said again, so the share its most common unit
+    carries is what separates it from a real reading: ninety seconds of table
+    talk is a few hundred words and no one of them comes back twenty times.
+    Units are sentences and lines; the word floor catches a loop that never
+    produced a full stop.
+    """
+    units = [
+        unit.strip().casefold()
+        for unit in re.split(r"(?<=[.!?])\s+|\n+", text)
+        if unit.strip()
+    ]
+    if len(units) >= REPEAT_MIN_UNITS:
+        common = Counter(units).most_common(1)[0][1]
+        if common / len(units) >= REPEAT_UNIT_SHARE:
+            return True
+    words = [word.casefold() for word in text.split()]
+    if len(words) >= REPEAT_MIN_WORDS:
+        return Counter(words).most_common(1)[0][1] / len(words) >= REPEAT_WORD_SHARE
+    return False
+
+
+def looks_complete(text: str, seconds: float, truncated: bool = False) -> bool:
+    """Could this be a full reading of that much audio?
+
+    A truncated answer ran into the token cap, so whatever it wrote, the rest of
+    the audio is not in it.
+    """
     stripped = text.strip()
-    if not stripped or _TIMESTAMPS.match(stripped):
+    if not stripped or truncated or _TIMESTAMPS.match(stripped):
+        return False
+    if repeats_itself(stripped):
         return False
     if seconds < MIN_RATE_SECONDS:
         return True
     return len(stripped.split()) >= max(MIN_WORDS, MIN_WORDS_PER_SECOND * seconds)
+
+
+def _rank(text: str, truncated: bool = False) -> tuple[int, int]:
+    """Which of two readings to keep: a sane one beats a longer one.
+
+    A runaway still beats nothing when it is all the model will give, so it is
+    ranked last rather than thrown away.
+    """
+    sane = 0 if truncated or repeats_itself(text) else 1
+    return sane, len(text)
 
 
 def utterance_seconds(pcm: bytes) -> list[float]:
@@ -268,14 +324,16 @@ class GeminiTranscriber:
             audio_cfg.output_sample_rate * audio_cfg.sample_width
         )
         best = self._read_until_complete(pcm, seconds)
-        if best is not None and looks_complete(best["text"], seconds):
+        if best is not None and looks_complete(
+            best["text"], seconds, best.get("truncated", False)
+        ):
             return best
 
         if depth >= MAX_SPLIT_DEPTH or seconds < MIN_SPLIT_SECONDS:
             if best is not None:
                 logger.error(
-                    "Gave up completing a %.0fs chunk; keeping the longest "
-                    "reading, %d word(s).",
+                    "Gave up completing a %.0fs chunk; keeping the best "
+                    "reading it gave, %d word(s).",
                     seconds,
                     len(best["text"].split()),
                 )
@@ -298,7 +356,11 @@ class GeminiTranscriber:
             "attempts": sum(piece.get("attempts") or 1 for piece in pieces),
             "split": True,
         }
-        if looks_complete(text, seconds) or best is None or len(text) > len(best["text"]):
+        if (
+            looks_complete(text, seconds)
+            or best is None
+            or _rank(text) > _rank(best["text"], best.get("truncated", False))
+        ):
             logger.warning(
                 "Chunk of %.0fs was abandoned; recovered %d word(s) by asking "
                 "about its halves.",
@@ -322,11 +384,24 @@ class GeminiTranscriber:
             result = self._ask(prompt, pcm)
             if result is None:
                 continue
-            if best is None or len(result["text"]) > len(best["text"]):
+            if best is None or _rank(
+                result["text"], result.get("truncated", False)
+            ) > _rank(best["text"], best.get("truncated", False)):
                 best = result
-            if looks_complete(result["text"], seconds):
+            if looks_complete(result["text"], seconds, result.get("truncated", False)):
                 best["attempts"] = attempt
                 return best
+            if result.get("truncated") or repeats_itself(result["text"]):
+                logger.warning(
+                    "Chunk of %.0fs read back as a loop (%s, %d word(s)): %s",
+                    seconds,
+                    "hit the token cap"
+                    if result.get("truncated")
+                    else "one unit repeated",
+                    len(result["text"].split()),
+                    result["text"][:70],
+                )
+                continue
             logger.warning(
                 "Chunk of %.0fs read back as %d word(s) (attempt %d/%d): %s",
                 seconds,
@@ -387,7 +462,8 @@ class GeminiTranscriber:
             logger.error("Chunk transcription error: %s", exc)
             return None
 
-        text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+        choice = (data.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content")
         text = tidy(text or "", utterance_seconds(pcm))
         usage = data.get("usage") or {}
         if not text:
@@ -399,4 +475,5 @@ class GeminiTranscriber:
             "text": text,
             "latency": round(time.perf_counter() - started, 3),
             "cost": usage.get("cost"),
+            "truncated": choice.get("finish_reason") == "length",
         }

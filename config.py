@@ -254,8 +254,15 @@ class STTConfig:
             "STT_CHUNK_MODEL", "google/gemini-2.5-flash"
         )
     )
+    # A ceiling on the damage a runaway does, not a length the model needs. The
+    # longest chunk the span cap allows is 90s, which at the measured 3 words a
+    # second is about 270 words, roughly 400 tokens of French. The rules
+    # repository measured the failure on one of these recordings: 99s of audio
+    # answered to the 4,096-token cap with "Hmm." over and over, $0.010 for the
+    # one call. 2,048 bounds that at half a cent and still leaves four times the
+    # room the longest honest reading needs.
     chunk_max_tokens: int = field(
-        default_factory=lambda: _env_int("STT_CHUNK_MAX_TOKENS", 16000)
+        default_factory=lambda: _env_int("STT_CHUNK_MAX_TOKENS", 2048)
     )
     chunk_timeout_seconds: float = field(
         default_factory=lambda: _env_float("STT_CHUNK_TIMEOUT", 600.0)

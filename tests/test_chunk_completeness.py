@@ -5,8 +5,10 @@ was posted as if complete. The reading is checked against the audio length
 here, and re-asked when it cannot be right.
 """
 
+import json
 import queue
 import threading
+import urllib.request
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +37,12 @@ def _pcm(seconds, level=513):
     )
 
 
+def _words(count):
+    """Plausible speech for a length: distinct words, because no real reading is
+    one word repeated and the runaway check now says so."""
+    return " ".join("mot%d" % i for i in range(count))
+
+
 # -- the completeness check ---------------------------------------------------
 
 
@@ -43,7 +51,7 @@ def test_one_sentence_is_not_a_reading_of_twenty_four_seconds():
 
 
 def test_a_full_reading_passes():
-    assert looks_complete(" ".join(["mot"] * 61), 24.4)
+    assert looks_complete(_words(61), 24.4)
 
 
 def test_a_clock_is_not_a_transcript():
@@ -68,6 +76,88 @@ def test_one_word_is_a_fair_reading_of_a_two_second_clip():
 
 def test_a_long_chunk_is_still_held_to_the_rate():
     assert not looks_complete("Ok.", 24.4)
+
+
+# -- the runaway --------------------------------------------------------------
+# The opposite failure, measured on this bot's own recordings in the rules
+# repository's voice benchmark: a 99s clip was answered to the 4,096-token cap
+# with "Hmm." over and over, $0.010 for the one call. The reading is longer than
+# the audio can hold, and it is not a reading of anything.
+
+
+def test_a_loop_is_not_a_reading():
+    assert not looks_complete(" ".join(["Hmm."] * 200), 99.0)
+
+
+def test_a_loop_that_never_produced_a_full_stop_is_not_a_reading():
+    assert not looks_complete(" ".join(["Hmm"] * 200), 99.0)
+
+
+def test_a_truncated_answer_is_not_a_reading():
+    """finish_reason "length" is the model saying the rest is not in there."""
+    assert not looks_complete(_words(61), 24.4, truncated=True)
+
+
+def test_repeating_oui_a_few_times_is_still_a_reading():
+    """Table talk repeats itself. Six of them is not a loop."""
+    assert looks_complete("Oui. " * 5 + _words(50), 24.4)
+
+
+def test_a_long_runaway_does_not_win_on_length():
+    """It is longer than the truth, and length used to be the only tie-break."""
+    transcriber = GeminiTranscriber(model="test/model")
+    answers = iter([" ".join(["Hmm."] * 300), _words(50)])
+    transcriber._ask = lambda prompt, pcm: {
+        "text": next(answers), "latency": 0.1, "cost": 0.0,
+    }
+    result = transcriber.transcribe(1, _pcm(24.4))
+    assert result["text"] == _words(50)
+    assert result["attempts"] == 2
+
+
+def test_a_truncated_reading_is_re_asked():
+    transcriber = GeminiTranscriber(model="test/model")
+    calls = []
+    answers = iter([
+        {"text": _words(50), "latency": 0.1, "cost": 0.0, "truncated": True},
+        {"text": _words(50), "latency": 0.1, "cost": 0.0, "truncated": False},
+    ])
+
+    def fake_ask(prompt, pcm):
+        calls.append(prompt)
+        return next(answers)
+
+    transcriber._ask = fake_ask
+    result = transcriber.transcribe(1, _pcm(24.4))
+    assert len(calls) == 2, "a truncated reading is not a full one"
+    assert result.get("truncated") is False
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_the_token_cap_is_read_off_the_answer(monkeypatch):
+    """The model reports the cap itself; nothing here has to guess."""
+    payload = {
+        "choices": [{"message": {"content": _words(50)}, "finish_reason": "length"}],
+        "usage": {"cost": 0.01},
+    }
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda request, timeout=None: _FakeResponse(payload)
+    )
+    result = GeminiTranscriber(model="test/model")._ask("prompt", _pcm(24.4))
+    assert result["truncated"] is True
 
 
 # -- the paragraphing --------------------------------------------------------
@@ -128,7 +218,7 @@ def test_a_thin_answer_is_re_asked_and_the_longer_one_wins():
 
     def fake_ask(prompt, pcm):
         calls.append(prompt)
-        text = "Ok." if len(calls) == 1 else " ".join(["mot"] * 40)
+        text = "Ok." if len(calls) == 1 else _words(40)
         return {"text": text, "latency": 0.1, "cost": 0.0}
 
     transcriber._ask = fake_ask
@@ -145,7 +235,7 @@ def test_a_good_first_answer_is_not_re_asked():
 
     def fake_ask(prompt, pcm):
         calls.append(prompt)
-        return {"text": " ".join(["mot"] * 60), "latency": 0.1, "cost": 0.0}
+        return {"text": _words(60), "latency": 0.1, "cost": 0.0}
 
     transcriber._ask = fake_ask
     result = transcriber.transcribe(1, _pcm(24.4))
@@ -175,7 +265,7 @@ def _split_aware_ask(calls, whole_limit=40):
         seconds = len(pcm) / BYTES_PER_SEC
         if seconds > whole_limit:
             return {"text": "Ok.", "latency": 0.1, "cost": 0.0}
-        return {"text": " ".join(["mot"] * 40), "latency": 0.1, "cost": 0.0}
+        return {"text": _words(40), "latency": 0.1, "cost": 0.0}
 
     return ask
 
