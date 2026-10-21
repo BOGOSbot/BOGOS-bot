@@ -30,6 +30,7 @@ Warhammer 40,000
 Warhammer 40000
 Warhammer
 40K
+BOGOS
 
 # -- factions, as they are printed ------------------------------------------
 Adepta Sororitas
@@ -134,6 +135,16 @@ Fight phase
 Command phase
 Psychic phase
 Waaagh
+
+# -- force dispositions -----------------------------------------------------
+# The five a game is played under, from the event companion's own list. They are
+# named when the mission is agreed, and two of them are ordinary French words
+# besides, which is exactly why the decoder has to be told they are names here.
+Take and Hold
+Purge the Foe
+Disruption
+Reconnaissance
+Priority Assets
 
 # -- wargear people name out loud -------------------------------------------
 Bolter
