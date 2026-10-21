@@ -35,8 +35,25 @@ DEFAULT_MODELS = ["openai/gpt-transcribe", "mistralai/voxtral-small-24b-2507-stt
 RETRYABLE = ("429", "500", "502", "503", "504")
 
 
-def _once(path: Path, model: str, language: str) -> dict:
-    """One request. Text, latency, and what the response says it cost."""
+def _once(
+    path: Path,
+    model: str,
+    language: str,
+    context_bias: str = "",
+    provider: str = "mistral",
+) -> dict:
+    """One request. Text, latency, and what the response says it cost.
+
+    A vocabulary goes in provider.options, keyed by the provider slug from the
+    endpoints API, because OpenRouter normalises only a few fields and forwards
+    the rest under the provider's own names. Voxtral's field is context_bias,
+    and it must be a comma-separated *string*: a JSON array is accepted and
+    then ignored without an error, which is what OpenRouter's own guide warns
+    about. Measured on the 21:11 session, a string of five terms turned
+    "l'arcon et les cobayes" into "l'Archon et les Kabalites" on three runs out
+    of three; the same five as a list changed nothing on three runs out of
+    three.
+    """
     payload = {
         "model": model,
         "input_audio": {
@@ -47,6 +64,8 @@ def _once(path: Path, model: str, language: str) -> dict:
     }
     if language and language != "auto":
         payload["language"] = language
+    if context_bias:
+        payload["provider"] = {"options": {provider: {"context_bias": context_bias}}}
 
     request = urllib.request.Request(
         ENDPOINT,
@@ -78,14 +97,14 @@ def _once(path: Path, model: str, language: str) -> dict:
     }
 
 
-def transcribe(path: Path, model: str, language: str) -> dict:
+def transcribe(path: Path, model: str, language: str, context_bias: str = "", provider: str = "mistral") -> dict:
     """With a backoff: a burst of hundreds of requests will hit a rate limit."""
-    last = _once(path, model, language)
+    last = _once(path, model, language, context_bias, provider)
     for attempt in range(3):
         if not last.get("error") or not any(c in last["error"] for c in RETRYABLE):
             return last
         time.sleep(1.5 * (attempt + 1))
-        last = _once(path, model, language)
+        last = _once(path, model, language, context_bias, provider)
     return last
 
 
@@ -128,7 +147,21 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--dump-dir", default="")
     parser.add_argument("--show", type=int, default=12)
+    parser.add_argument(
+        "--context-bias",
+        default="",
+        help="file of names, one per line, sent as Voxtral's context_bias",
+    )
+    parser.add_argument("--bias-provider", default="mistral")
     args = parser.parse_args()
+
+    context_bias = ""
+    if args.context_bias:
+        context_bias = ", ".join(
+            line.strip()
+            for line in Path(args.context_bias).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        )
 
     if args.dump_dir:
         wavs = sorted(Path(args.dump_dir).glob("*.wav"))
@@ -150,7 +183,12 @@ def main() -> int:
     started = time.perf_counter()
     if tasks:
         with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-            futures = {pool.submit(transcribe, p, m, args.language): (p, m) for p, m in tasks}
+            futures = {
+                pool.submit(
+                    transcribe, p, m, args.language, context_bias, args.bias_provider
+                ): (p, m)
+                for p, m in tasks
+            }
             done = 0
             for future in as_completed(futures):
                 p, m = futures[future]

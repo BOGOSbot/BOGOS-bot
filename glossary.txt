@@ -74,6 +74,23 @@ Genestealers
 Boyz
 Titans
 
+# -- units people name out loud ---------------------------------------------
+# The sections above are factions and rules. The meeting is about army lists,
+# so what gets said most is units, and they are what the decoder mangles: on
+# the 21:11 session it wrote "l'arcon", "les cobayes", "les witches" and
+# "shit captain", every one of them a name it had never been told to expect.
+Archon
+Incube
+Incubes
+Succube
+Succubes
+Kabalite
+Kabalites
+Wyches
+Agamatus
+Shield Captain
+Take to the Skies
+
 # -- a tournament week ------------------------------------------------------
 # Only what is actually said out loud. Ordinary French is left out on purpose:
 # the model already spells "appariement" and "hebergement" correctly, and a list
