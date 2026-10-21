@@ -13,12 +13,15 @@ edit applies to the next chunk rather than the next restart:
     glossary.txt          shipped with the repository
     glossary.local.txt    the team's own, gitignored, optional
     glossary.session.txt  this conversation's, written by the bot from the
-                          pairing sheet at !transcript and cleared at !stop
+                          pairing sheet at !pairing or !transcript, cleared
+                          at !stop
 
 The local list is for what does not belong in a public repository: their
 armies, their players, the venue, the gite. The session list is what the
 pairing sheet already knows - the teams, the players, the armies - so nobody
-has to type it. Both are read after the shipped list, so a spelling that is
+has to type it, and it is read from whichever command was handed the link,
+because a new sheet is made for every meeting and the link is the only place
+its names exist. Both are read after the shipped list, so a spelling that is
 already known wins.
 
 Both are attached to every chunk, so their size is paid every time. The whole
@@ -35,6 +38,7 @@ glossary that invents them.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -52,6 +56,11 @@ SPELLINGS = "\n\nSpell these names this way if you hear them: {terms}."
 # Past this the list has stopped being a core vocabulary and become a corpus,
 # and every chunk is paying for it. Warning only: the file is the user's.
 WARN_CHARS = 4000
+
+# How long a published session list may still be adopted by a new session. A
+# meeting is a few hours, so a list older than this belongs to a meeting that
+# was read and never transcribed.
+SESSION_MAX_AGE_SECONDS = 12 * 3600.0
 
 _warned = False
 
@@ -123,6 +132,42 @@ def set_session_terms(terms: Iterable[str]) -> int:
         logger.warning("Could not write %s: %s", path, exc)
         return 0
     return len(cleaned)
+
+
+def session_terms() -> list[str]:
+    """The names this conversation can still adopt, or [] if there are none.
+
+    The pairing sheet is per meeting: a new one is made for every tournament, so
+    the link is the only place its names exist and a list read for one meeting
+    must not reach the next. A name from the wrong tournament is exactly what a
+    glossary is meant to prevent. !stop clears the file, so what is left is
+    either this meeting's list or one that was read and never used, and the
+    file's own age tells the two apart without anything written into it.
+
+    This decides whether to *adopt* a list, not whether to keep reading one: a
+    session that has started keeps its names however long the meeting runs.
+    """
+    path = session_path()
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return []
+    if age > SESSION_MAX_AGE_SECONDS:
+        logger.info(
+            "Ignoring a session glossary %.0f hours old; it belongs to a "
+            "meeting that was never transcribed.",
+            age / 3600.0,
+        )
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    return _clean(
+        line.strip()
+        for line in raw.splitlines()
+        if line.strip() and not line.startswith("#")
+    )
 
 
 def terms() -> list[str]:

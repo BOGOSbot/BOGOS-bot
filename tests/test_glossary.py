@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -165,3 +167,43 @@ def test_closing_the_session_forgets_the_sheet(lists):
 
 def test_a_cell_too_short_to_be_a_name_is_dropped(lists):
     assert glossary.set_session_terms(["OK", "-", "", "  ", "Mandal"]) == 1
+
+
+# -- what a new session may adopt ---------------------------------------------
+# The pairing sheet is a format: a new one is made for every meeting, so its
+# names only exist behind the link and !pairing is how most of them get read.
+
+
+def test_a_session_list_from_this_meeting_is_adopted(lists):
+    """!pairing reads the sheet, !transcript picks the names up."""
+    glossary.set_session_terms(["Les Chevaliers", "Mandal", "Necrons"])
+    assert glossary.session_terms() == ["Les Chevaliers", "Mandal", "Necrons"]
+
+
+def test_a_session_list_nobody_transcribed_is_not_adopted(lists):
+    """A name from the wrong tournament is the exact harm a glossary prevents."""
+    _, _, session = lists
+    glossary.set_session_terms(["Les Chevaliers", "Mandal"])
+    stale = time.time() - glossary.SESSION_MAX_AGE_SECONDS - 60
+    os.utime(session, (stale, stale))
+    assert glossary.session_terms() == []
+
+
+def test_adopting_is_gated_but_reading_is_not(lists):
+    """A meeting that has started keeps its names however long it runs."""
+    _, _, session = lists
+    glossary.set_session_terms(["Mandal"])
+    stale = time.time() - glossary.SESSION_MAX_AGE_SECONDS - 60
+    os.utime(session, (stale, stale))
+    assert glossary.session_terms() == [], "not adopted"
+    assert glossary.terms() == ["Mandal"], "and still read once running"
+
+
+def test_no_session_list_is_no_names(lists):
+    assert glossary.session_terms() == []
+
+
+def test_a_comment_in_the_session_list_is_not_a_name(lists):
+    _, _, session = lists
+    session.write_text("# written by !pairing\nMandal\n", encoding="utf-8")
+    assert glossary.session_terms() == ["Mandal"]

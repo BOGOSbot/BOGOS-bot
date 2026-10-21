@@ -280,8 +280,12 @@ class STTBot:
                     tabs = []
                 vocabulary = glossary.set_session_terms(pairing.vocabulary(tabs))
             else:
-                # A link from an earlier session must not colour this one.
-                glossary.set_session_terms([])
+                # A sheet read earlier in this meeting is the right list, and
+                # !pairing is how most of them get read: the sheet is a format,
+                # a new one is made for every meeting. One from a meeting that
+                # was never transcribed is not, and glossary.session_terms
+                # drops that itself on the file's age.
+                vocabulary = len(glossary.session_terms())
 
             # Check permissions BEFORE dialling. Without Connect, Discord never
             # completes the voice handshake and discord.py raises a bare
@@ -415,6 +419,13 @@ class STTBot:
                 if skipped:
                     logger.debug("Pairing tabs skipped: %s", ", ".join(skipped))
 
+                # The sheet is the meeting's, so reading it is what teaches the
+                # transcriber the teams, the players and the armies. Doing it
+                # here rather than only at !transcript means the names are in
+                # place whichever command got the link, and the link is the only
+                # place they exist: one workbook per tournament, no fallback.
+                learned = glossary.set_session_terms(pairing.vocabulary(tabs))
+
                 # Resolve sheet names against the live roster, so a rename or
                 # a new player needs no configuration. Failure is survivable:
                 # names simply come out bold instead of pinged.
@@ -436,6 +447,11 @@ class STTBot:
                         )
 
             await ctx.send(pairing.render(tabs, resolver))
+            if learned:
+                await ctx.send(
+                    f"📖 {learned} name(s) from that sheet. The next "
+                    f"{discord_cfg.command_prefix}transcript will expect them."
+                )
             self._note_activity()
 
     def _send_command(self, command: str, payload: object) -> None:
