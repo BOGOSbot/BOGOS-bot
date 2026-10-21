@@ -284,8 +284,15 @@ class STTBot:
                 # !pairing is how most of them get read: the sheet is a format,
                 # a new one is made for every meeting. One from a meeting that
                 # was never transcribed is not, and glossary.session_terms
-                # drops that itself on the file's age.
-                vocabulary = len(glossary.session_terms())
+                # drops that on the file's age.
+                adopted = glossary.session_terms()
+                if not adopted:
+                    # Nothing to adopt. Clear the file anyway: the reader that
+                    # builds the prompt takes the session list whatever its age,
+                    # so a list left here would still reach the model while the
+                    # message below said there were no names.
+                    glossary.set_session_terms([])
+                vocabulary = len(adopted)
 
             # Check permissions BEFORE dialling. Without Connect, Discord never
             # completes the voice handshake and discord.py raises a bare
