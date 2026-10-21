@@ -243,6 +243,16 @@ function Get-EnvValue($name) {
     return ''
 }
 
+function Get-Route {
+    # Which transcriber the bot will use. Empty means "read it off the model id",
+    # which is how an .env written before the second route existed still works,
+    # so the badge shows what that resolves to and not what the file says.
+    $named = (Get-EnvValue 'STT_CHUNK_PROVIDER').Trim().ToLower()
+    if ($named) { return $named }
+    if ((Get-EnvValue 'STT_CHUNK_MODEL') -match 'gemini') { return 'gemini' }
+    return 'voxtral'
+}
+
 function Format-EnvValue($value) {
     # dotenv reads a bare value only up to the first space or comment marker.
     if ($value -match '[#\s]') { return [string][char]34 + $value + [string][char]34 }
@@ -398,6 +408,20 @@ $seam.Location = New-Object System.Drawing.Point(0, $RAIL_H)
 $seam.Size = New-Object System.Drawing.Size($W, 1)
 $seam.BackColor = $hair
 $form.Controls.Add($seam)
+
+# The route badge: two transcribers, one word, a click to swap them. It sits in
+# the title bar because it says what the machine is, not what it is doing.
+$routeBadge = New-Object System.Windows.Forms.Label
+$routeBadge.Text = ''
+$routeBadge.Font = New-UiFont 7.5
+$routeBadge.ForeColor = $amber
+$routeBadge.BackColor = $case
+$routeBadge.Location = New-Object System.Drawing.Point(($W - $PAD - 46 - 96), 4)
+$routeBadge.Size = New-Object System.Drawing.Size(92, 22)
+$routeBadge.TextAlign = 'MiddleRight'
+$routeBadge.Cursor = [System.Windows.Forms.Cursors]::Hand
+$routeBadge.AccessibleName = 'Cloud transcription route'
+$form.Controls.Add($routeBadge)
 
 $minimise = New-Object System.Windows.Forms.Label
 $minimise.Text = $dash
@@ -757,6 +781,12 @@ function Update-Panel {
         $apiRow.Text = 'add an OpenRouter key'
     }
 
+    $route = Get-Route
+    $routeBadge.Text = $route.ToUpper()
+    # Amber is the route this team settled on; the other one is dimmed, not
+    # hidden, because it is one click away.
+    $routeBadge.ForeColor = $(if ($route -eq 'gemini') { $ivoryDim } else { $amber })
+
     $recWord.AccessibleName = 'Record audio to disk'
     $recWord.AccessibleDescription = $(if ($recording.enabled) { 'on' } else { 'off' })
     $keyBtn.AccessibleName = $keyBtn.Text + ' the bot'
@@ -774,6 +804,10 @@ function Update-Panel {
     $tipProvider.SetToolTip($dest, $tipRecording + ' Click to choose the folder.')
     $tipProvider.SetToolTip($keyBtn, 'Start or stop the bot process.')
     $tipProvider.SetToolTip($apiRow, 'The key cloud transcription uses. Saved in .env on this machine.')
+    $routeBadge.AccessibleDescription = $route
+    $tipProvider.SetToolTip($routeBadge,
+        'Cloud transcription uses ' + $route + ' on the next start. Click to switch route; ' +
+        'a bot that is already running keeps the one it started with.')
     $tipProvider.SetToolTip($logLine, 'The last line the bot logged.')
 
     if ($trayKey -ne $script:trayKey) {
@@ -831,6 +865,13 @@ $dest.Add_Click({
 $apiRow.Add_MouseEnter({ $apiRow.ForeColor = $ivory })
 $apiRow.Add_MouseLeave({ $apiRow.ForeColor = $ivoryDim })
 $apiRow.Add_Click({ Show-KeyDialog })
+$routeBadge.Add_MouseEnter({ $routeBadge.ForeColor = $ivoryBright })
+$routeBadge.Add_MouseLeave({ Update-Panel })
+$routeBadge.Add_Click({
+    $next = $(if ((Get-Route) -eq 'gemini') { 'voxtral' } else { 'gemini' })
+    Set-EnvValue 'STT_CHUNK_PROVIDER' $next
+    Update-Panel
+})
 
 $close.Add_MouseEnter({ $close.ForeColor = $ivory })
 $close.Add_MouseLeave({ $close.ForeColor = $screenInk })
