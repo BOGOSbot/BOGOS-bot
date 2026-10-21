@@ -16,6 +16,14 @@
 # Read fresh before each request, so an edit applies to the next chunk without a
 # restart. Point STT_GLOSSARY_FILE somewhere else, or set it empty to turn the
 # glossary off.
+#
+# Unit names are deliberately absent, and it is not an oversight. A meeting
+# covers six teams of eight players, each on a different army, so a static list
+# of units is enormous and mostly irrelevant to the game being discussed: a
+# first pass at the 21:11 session fixed l'arcon, les cobayes and les witches and
+# bought nothing the next week. What varies per game already arrives from the
+# pairing sheet, which carries the teams, the players and the Faction column;
+# what turns out to be common to every meeting gets curated here afterwards.
 
 # -- the game ---------------------------------------------------------------
 Warhammer 40,000
@@ -73,23 +81,6 @@ Daemons
 Genestealers
 Boyz
 Titans
-
-# -- units people name out loud ---------------------------------------------
-# The sections above are factions and rules. The meeting is about army lists,
-# so what gets said most is units, and they are what the decoder mangles: on
-# the 21:11 session it wrote "l'arcon", "les cobayes", "les witches" and
-# "shit captain", every one of them a name it had never been told to expect.
-Archon
-Incube
-Incubes
-Succube
-Succubes
-Kabalite
-Kabalites
-Wyches
-Agamatus
-Shield Captain
-Take to the Skies
 
 # -- a tournament week ------------------------------------------------------
 # Only what is actually said out loud. Ordinary French is left out on purpose:
