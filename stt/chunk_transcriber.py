@@ -1,10 +1,11 @@
-"""Transcribe a whole chunk through Gemini's audio input.
+"""Turn one chunk of speech into one turn of transcript, by either route.
 
-Not the /audio/transcriptions endpoint. Gemini takes audio as a content part in
-a normal chat request, which means the prompt travels with the audio: saying it
-is two players mid-game of Warhammer 40,000 is what makes the model spell the
-unit names the way the table did. A dedicated ASR endpoint gets no such hint and
-writes what it heard instead, which on this session produced "battle shop".
+Two ways to reach a model, and they differ in one thing: what can travel beside
+the audio. Gemini takes audio as a content part of a chat request, so the prompt
+goes with it and the vocabulary can be named in prose. Voxtral Transcribe takes
+audio and returns text with no prompt at all, so its vocabulary arrives as
+context_bias and nothing else can be said. Everything that decides whether a
+reading is trustworthy is shared below; only _ask differs.
 
 A chunk can come back as its opening sentence. The model reports finish_reason
 "stop" after six completion tokens and the rest of the audio is simply not
@@ -41,7 +42,13 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+CHAT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+TRANSCRIBE_ENDPOINT = "https://openrouter.ai/api/v1/audio/transcriptions"
+
+# The second attempt on a route with no prompt cannot be worded differently, so
+# it is the same question with the sampler nudged. Measured on the 21:11 clips,
+# this route answers identically every time at temperature 0.
+RETRY_TEMPERATURE = 0.2
 
 # Cloudflare-fronted routes refuse a bare urllib signature.
 USER_AGENT = (
@@ -306,11 +313,27 @@ def _halves(pcm: bytes) -> tuple[bytes, bytes]:
     return pcm[:best], pcm[best:]
 
 
-class GeminiTranscriber:
-    """One request per chunk, with the prompt that carries the context."""
+def _headers() -> dict[str, str]:
+    """What every request to OpenRouter carries."""
+    return {
+        "Authorization": "Bearer " + stt_cfg.api_key,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/BOGOSbot/BOGOS-bot",
+        "X-Title": "BOGOS bot",
+        "User-Agent": USER_AGENT,
+    }
 
-    def __init__(self, model: str | None = None) -> None:
-        self._model = model or stt_cfg.chunk_model
+
+class ChunkTranscriber:
+    """One request per chunk, checked against the audio and re-asked if wrong.
+
+    A route supplies _ask and nothing else. The reading is checked here, where
+    the audio length is known, so no route has to know what a thin reading looks
+    like or how to recover one.
+    """
+
+    def __init__(self, model: str) -> None:
+        self._model = model
         logger.info("Chunk transcriber ready: %s", self._model)
 
     @property
@@ -376,12 +399,7 @@ class GeminiTranscriber:
         best: dict[str, Any] | None = None
 
         for attempt in range(1, attempts + 1):
-            # The vocabulary goes on the base prompt, so the retry still
-            # carries it and the two attempts share a cacheable prefix.
-            prompt = glossary.append_to(stt_cfg.chunk_prompt)
-            if attempt > 1:
-                prompt += RETRY_SUFFIX
-            result = self._ask(prompt, pcm)
+            result = self._ask(pcm, attempt)
             if result is None:
                 continue
             if best is None or _rank(
@@ -412,7 +430,29 @@ class GeminiTranscriber:
             )
         return best
 
-    def _ask(self, prompt: str, pcm: bytes) -> dict[str, Any] | None:
+    def _ask(self, pcm: bytes, attempt: int) -> dict[str, Any] | None:
+        """One request to the route's endpoint. The only method it must write."""
+        raise NotImplementedError
+
+
+class GeminiTranscriber(ChunkTranscriber):
+    """Audio as a content part of a chat request, so the prompt travels with it.
+
+    Saying what the audio is, and naming the vocabulary in prose, is what makes
+    the model spell the game's names the way the table did. A dedicated ASR
+    endpoint gets no such hint and writes what it heard instead, which on an
+    early session produced "battle shop".
+    """
+
+    def __init__(self, model: str | None = None) -> None:
+        super().__init__(model or stt_cfg.chunk_model_gemini)
+
+    def _ask(self, pcm: bytes, attempt: int) -> dict[str, Any] | None:
+        # The vocabulary goes on the base prompt, so the retry still carries it
+        # and the two attempts share a cacheable prefix.
+        prompt = glossary.append_to(stt_cfg.chunk_prompt)
+        if attempt > 1:
+            prompt += RETRY_SUFFIX
         body = {
             "model": self._model,
             "temperature": 0,
@@ -436,15 +476,9 @@ class GeminiTranscriber:
             ],
         }
         request = urllib.request.Request(
-            ENDPOINT,
+            CHAT_ENDPOINT,
             data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Authorization": "Bearer " + stt_cfg.api_key,
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/BOGOSbot/BOGOS-bot",
-                "X-Title": "BOGOS bot",
-                "User-Agent": USER_AGENT,
-            },
+            headers=_headers(),
             method="POST",
         )
 
@@ -477,3 +511,84 @@ class GeminiTranscriber:
             "cost": usage.get("cost"),
             "truncated": choice.get("finish_reason") == "length",
         }
+
+
+class VoxtralTranscriber(ChunkTranscriber):
+    """Audio in, text out, and the vocabulary as context_bias.
+
+    There is no prompt on this route, so everything the chat route says in prose
+    has to arrive as a term. context_bias takes a comma-separated *string*: the
+    same names as a JSON array are accepted and then ignored, silently, which is
+    what OpenRouter's guide warns providers do with options they do not forward.
+    On the 21:11 clips a string of five terms turned "l'arcon et les cobayes"
+    into "l'Archon et les Kabalites" on three runs out of three; the same five
+    as a list changed nothing on three runs out of three.
+    """
+
+    def __init__(self, model: str | None = None) -> None:
+        super().__init__(model or stt_cfg.chunk_model)
+
+    def _ask(self, pcm: bytes, attempt: int) -> dict[str, Any] | None:
+        body: dict[str, Any] = {
+            "model": self._model,
+            "input_audio": {
+                "data": base64.b64encode(pcm_to_wav(pcm)).decode("ascii"),
+                "format": "wav",
+            },
+            "usage": {"include": True},
+        }
+        if stt_cfg.chunk_language:
+            body["language"] = stt_cfg.chunk_language
+        if attempt > 1:
+            # No second way to word the question, so the re-ask is the same
+            # question with the sampler nudged: this route answers identically
+            # every time at temperature 0.
+            body["temperature"] = RETRY_TEMPERATURE
+        terms = glossary.terms()
+        if terms:
+            body["provider"] = {
+                "options": {
+                    stt_cfg.bias_provider: {"context_bias": ", ".join(terms)}
+                }
+            }
+
+        request = urllib.request.Request(
+            TRANSCRIBE_ENDPOINT,
+            data=json.dumps(body).encode("utf-8"),
+            headers=_headers(),
+            method="POST",
+        )
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(
+                request, timeout=stt_cfg.chunk_timeout_seconds
+            ) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            logger.error("Chunk transcription failed (HTTP %s): %s", exc.code, detail)
+            return None
+        except Exception as exc:
+            logger.error("Chunk transcription error: %s", exc)
+            return None
+
+        # No finish_reason on this endpoint: the whole body is the reading, so
+        # a truncation can only show up as a loop, which repeats_itself catches.
+        text = tidy(data.get("text") or "", utterance_seconds(pcm))
+        usage = data.get("usage") or {}
+        if not text:
+            logger.warning("Chunk came back empty (%s seconds of audio).", usage.get("seconds"))
+            return None
+        return {
+            "text": text,
+            "latency": round(time.perf_counter() - started, 3),
+            "cost": usage.get("cost"),
+            "truncated": False,
+        }
+
+
+def build_transcriber() -> ChunkTranscriber:
+    """The route the widget and .env choose, read at each session, not at import."""
+    if stt_cfg.active_chunk_provider == "gemini":
+        return GeminiTranscriber()
+    return VoxtralTranscriber()

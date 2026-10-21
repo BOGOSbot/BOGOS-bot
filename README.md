@@ -91,10 +91,12 @@ six-word reading of five minutes from a quiet five minutes.
 A chunk can also come back as a clock -- a 300-second chunk answered `00:00`
 through `04:59`, one label per second, and no speech at all.
 
-Both are caught in `stt/gemini_transcriber.py`, where the audio length is known:
+Both are caught in `stt/chunk_transcriber.py`, where the audio length is known:
 a reading under 0.8 words per second, or one that is nothing but timestamps, is
-re-asked once with a prompt that names the failure, and the longer of the two
-answers is kept either way. The rate only applies above 10 seconds — a
+re-asked once, and the better of the two answers is kept either way. On the
+Gemini route the second ask is worded differently, which is what the early stop
+ignores; on Voxtral there is no prompt to reword, so it is the same question
+with the sampler nudged. The rate only applies above 10 seconds — a
 two-second clip that says one word is a complete reading of that clip.
 
 Re-asking the same audio usually fails, because the model stops in the same
@@ -128,9 +130,30 @@ who is speaking does not hold either: given two speakers taking turns it
 returned the right alternation with the names swapped, which is worse than no
 labels. That is why chunks stay per speaker and the speaker is never guessed.
 
-The model is `google/gemini-2.5-flash`, not the lite tier. Measured on two
-recordings of one speaker, lite lost the content of four of six shapings of the
-same audio, and flash lost none.
+## The two routes
+
+`STT_CHUNK_PROVIDER` picks who reads a chunk, and the widget carries a badge in
+its title bar that switches it.
+
+**Voxtral Transcribe** (`mistralai/voxtral-small-transcribe-3-0`) is the one
+this team settled on. It sends the audio to `/api/v1/audio/transcriptions` and
+gets text back, with no prompt at all, so the vocabulary arrives as
+`context_bias`. Read the twenty clips of the 21:11 session against Gemini's and
+the difference is not the names, it is everything else: it punctuates, it does
+not repeat a word three times, and it does not insert an `Euh` the speaker did
+not say. It is billed per second of audio, about **$0.24 per hour of speech**.
+
+**Gemini** (`google/gemini-2.5-flash`) takes the audio as a content part of a
+chat request, so the prompt travels with it and the vocabulary is named in
+prose. It is about **$0.16 per hour** with the glossary cached, and it is the
+route used before, kept because it costs less and it is worth re-measuring.
+
+Both routes share everything that decides whether a reading is trustworthy.
+Only the request differs, so only `_ask` differs; see
+[stt/chunk_transcriber.py](stt/chunk_transcriber.py).
+
+Neither is the lite tier. Measured on two recordings of one speaker, lite lost
+the content of four of six shapings of the same audio, and flash lost none.
 
 ## The glossary
 

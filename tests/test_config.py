@@ -1,6 +1,9 @@
+import dataclasses
 import importlib
 
 import pytest
+
+from config import STTConfig, stt_cfg
 
 
 def test_config_reads_environment_values(monkeypatch) -> None:
@@ -81,3 +84,42 @@ def test_no_credential_and_no_variable_is_empty(monkeypatch) -> None:
     import config
 
     assert config._secret("DISCORD_TOKEN", "discord-token") == ""
+
+
+# -- which route a chunk takes ------------------------------------------------
+# Two routes, and an .env written before the second one existed names only a
+# model id. Following that is better than sending a chat model's id to the
+# transcription endpoint, which is what a naive default would do.
+
+
+def _with(**overrides) -> STTConfig:
+    return dataclasses.replace(stt_cfg, **overrides)
+
+
+def test_a_named_route_wins_over_the_model_id() -> None:
+    named_gemini = _with(
+        chunk_provider="gemini", chunk_model="mistralai/voxtral-small-transcribe-3-0"
+    )
+    named_voxtral = _with(
+        chunk_provider="voxtral", chunk_model="google/gemini-2.5-flash"
+    )
+    assert named_gemini.active_chunk_provider == "gemini"
+    assert named_voxtral.active_chunk_provider == "voxtral"
+
+
+def test_an_env_that_names_only_a_gemini_model_takes_the_gemini_route() -> None:
+    old = _with(
+        chunk_provider="",
+        chunk_model="google/gemini-2.5-flash",
+        chunk_model_gemini="google/gemini-2.5-flash",
+    )
+    assert old.active_chunk_provider == "gemini"
+    assert old.active_chunk_model == "google/gemini-2.5-flash"
+
+
+def test_no_provider_with_a_transcription_model_reads_as_voxtral() -> None:
+    default = _with(
+        chunk_provider="", chunk_model="mistralai/voxtral-small-transcribe-3-0"
+    )
+    assert default.active_chunk_provider == "voxtral"
+    assert default.active_chunk_model == "mistralai/voxtral-small-transcribe-3-0"

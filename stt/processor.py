@@ -94,9 +94,9 @@ class STTProcessor:
         # context that the model stops guessing at the proper nouns, which is
         # what the second model and the reconciler were compensating for.
         if api_cfg.backend == "openrouter":
-            from stt.gemini_transcriber import GeminiTranscriber
+            from stt.chunk_transcriber import build_transcriber
 
-            self._transcriber = GeminiTranscriber()
+            self._transcriber = build_transcriber()
         else:
             from stt.transcriber import Transcriber
 

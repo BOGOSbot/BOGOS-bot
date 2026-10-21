@@ -10,6 +10,7 @@ import queue
 import threading
 import urllib.request
 import wave
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 
@@ -18,8 +19,12 @@ import pytest
 import recording
 from config import audio_cfg, stt_cfg
 from stt.chunker import AudioChunker
-from stt.gemini_transcriber import (
+from stt import glossary
+import stt.chunk_transcriber as chunk_transcriber
+from stt.chunk_transcriber import (
     GeminiTranscriber,
+    VoxtralTranscriber,
+    build_transcriber,
     _halves,
     looks_complete,
     tidy,
@@ -107,7 +112,7 @@ def test_a_long_runaway_does_not_win_on_length():
     """It is longer than the truth, and length used to be the only tie-break."""
     transcriber = GeminiTranscriber(model="test/model")
     answers = iter([" ".join(["Hmm."] * 300), _words(50)])
-    transcriber._ask = lambda prompt, pcm: {
+    transcriber._ask = lambda pcm, attempt: {
         "text": next(answers), "latency": 0.1, "cost": 0.0,
     }
     result = transcriber.transcribe(1, _pcm(24.4))
@@ -123,14 +128,78 @@ def test_a_truncated_reading_is_re_asked():
         {"text": _words(50), "latency": 0.1, "cost": 0.0, "truncated": False},
     ])
 
-    def fake_ask(prompt, pcm):
-        calls.append(prompt)
+    def fake_ask(pcm, attempt):
+        calls.append(attempt)
         return next(answers)
 
     transcriber._ask = fake_ask
     result = transcriber.transcribe(1, _pcm(24.4))
     assert len(calls) == 2, "a truncated reading is not a full one"
     assert result.get("truncated") is False
+
+
+def test_the_retry_prompt_says_what_to_do(monkeypatch):
+    """The first prompt says what not to do; the early stop ignores that."""
+    seen = {}
+    monkeypatch.setattr(
+        urllib.request, "urlopen", _capture(seen, _words(50), "stop")
+    )
+    GeminiTranscriber(model="test/model")._ask(_pcm(24.4), 2)
+    prompt = seen["body"]["messages"][0]["content"][0]["text"]
+    assert "first word to the last" in prompt, "the second ask is worded differently"
+
+
+@pytest.fixture
+def a_glossary(tmp_path, monkeypatch):
+    """A shipped list of our own, so the prompt has a term to carry."""
+    path = tmp_path / "glossary.txt"
+    path.write_text("Aeldari\nDrukhari\n", encoding="utf-8")
+    monkeypatch.setattr(
+        glossary,
+        "stt_cfg",
+        SimpleNamespace(glossary_file=str(path), glossary_local_file=""),
+    )
+    monkeypatch.setattr(glossary, "session_path", lambda: tmp_path / "session.txt")
+    return path
+
+
+def test_the_vocabulary_travels_on_both_attempts(a_glossary, monkeypatch):
+    """The retry keeps the terms, so a re-ask cannot lose the names."""
+    seen = {}
+    monkeypatch.setattr(
+        urllib.request, "urlopen", _capture(seen, _words(50), "stop")
+    )
+    GeminiTranscriber(model="test/model")._ask(_pcm(24.4), 1)
+    prompt = seen["body"]["messages"][0]["content"][0]["text"]
+    assert "Spell these names" in prompt
+
+
+def _capture(seen, text, finish):
+    """A urlopen that records the request and answers with one reading."""
+
+    class _Response:
+        def __init__(self):
+            self._payload = json.dumps(
+                {
+                    "choices": [{"message": {"content": text}, "finish_reason": finish}],
+                    "usage": {"cost": 0.0},
+                }
+            ).encode("utf-8")
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["body"] = json.loads(request.data.decode("utf-8"))
+        return _Response()
+
+    return fake_urlopen
 
 
 class _FakeResponse:
@@ -156,8 +225,120 @@ def test_the_token_cap_is_read_off_the_answer(monkeypatch):
     monkeypatch.setattr(
         urllib.request, "urlopen", lambda request, timeout=None: _FakeResponse(payload)
     )
-    result = GeminiTranscriber(model="test/model")._ask("prompt", _pcm(24.4))
+    result = GeminiTranscriber(model="test/model")._ask(_pcm(24.4), 1)
     assert result["truncated"] is True
+
+
+# -- the second route --------------------------------------------------------
+# Voxtral Transcribe takes audio and returns text, with no prompt, so the
+# vocabulary arrives as context_bias. The field must be a comma-separated
+# string: the same terms as a JSON array are accepted and then ignored.
+
+
+def _voxtral_capture(seen, text="Bonjour.", cost=0.003):
+    class _Response:
+        def __init__(self):
+            self._payload = json.dumps(
+                {"text": text, "usage": {"cost": cost, "seconds": 24}}
+            ).encode("utf-8")
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["url"] = request.full_url
+        seen["body"] = json.loads(request.data.decode("utf-8"))
+        return _Response()
+
+    return fake_urlopen
+
+
+def test_the_voxtral_route_posts_to_the_transcription_endpoint(
+    a_glossary, monkeypatch
+):
+    seen = {}
+    monkeypatch.setattr(urllib.request, "urlopen", _voxtral_capture(seen))
+    result = VoxtralTranscriber(model="test/model")._ask(_pcm(24.4), 1)
+
+    assert seen["url"].endswith("/audio/transcriptions")
+    assert seen["body"]["input_audio"]["format"] == "wav"
+    assert seen["body"]["model"] == "test/model"
+    assert result["text"] == "Bonjour."
+    assert result["cost"] == 0.003
+
+
+def test_the_vocabulary_is_a_string_and_not_a_list(a_glossary, monkeypatch):
+    """A JSON array is accepted and then ignored, silently, by this endpoint."""
+    seen = {}
+    monkeypatch.setattr(urllib.request, "urlopen", _voxtral_capture(seen))
+    VoxtralTranscriber(model="test/model")._ask(_pcm(24.4), 1)
+
+    options = seen["body"]["provider"]["options"][stt_cfg.bias_provider]
+    assert options["context_bias"] == "Aeldari, Drukhari"
+    assert isinstance(options["context_bias"], str), (
+        "a list here reads as no bias at all"
+    )
+
+
+def test_a_route_with_nothing_to_bias_sends_no_provider(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        glossary,
+        "stt_cfg",
+        SimpleNamespace(
+            glossary_file=str(tmp_path / "missing.txt"), glossary_local_file=""
+        ),
+    )
+    monkeypatch.setattr(glossary, "session_path", lambda: tmp_path / "none.txt")
+    seen = {}
+    monkeypatch.setattr(urllib.request, "urlopen", _voxtral_capture(seen))
+    VoxtralTranscriber(model="test/model")._ask(_pcm(24.4), 1)
+    assert "provider" not in seen["body"]
+
+
+def test_the_second_attempt_is_asked_at_a_different_temperature(
+    a_glossary, monkeypatch
+):
+    """There is no prompt to reword, so the re-ask is the sampler nudged."""
+    seen = {}
+    monkeypatch.setattr(urllib.request, "urlopen", _voxtral_capture(seen))
+    transcriber = VoxtralTranscriber(model="test/model")
+    transcriber._ask(_pcm(24.4), 1)
+    first = seen["body"].get("temperature")
+    transcriber._ask(_pcm(24.4), 2)
+    assert seen["body"]["temperature"] != first
+
+
+def test_the_configured_route_is_the_one_built(monkeypatch):
+    """The widget flips STT_CHUNK_PROVIDER; nothing else has to change."""
+    monkeypatch.setattr(
+        chunk_transcriber,
+        "stt_cfg",
+        SimpleNamespace(
+            active_chunk_provider="gemini",
+            chunk_provider="gemini",
+            chunk_model="v",
+            chunk_model_gemini="g",
+        ),
+    )
+    assert isinstance(build_transcriber(), GeminiTranscriber)
+
+    monkeypatch.setattr(
+        chunk_transcriber,
+        "stt_cfg",
+        SimpleNamespace(
+            active_chunk_provider="voxtral",
+            chunk_provider="voxtral",
+            chunk_model="v",
+            chunk_model_gemini="g",
+        ),
+    )
+    assert isinstance(build_transcriber(), VoxtralTranscriber)
 
 
 # -- the paragraphing --------------------------------------------------------
@@ -216,8 +397,8 @@ def test_a_thin_answer_is_re_asked_and_the_longer_one_wins():
     transcriber = GeminiTranscriber(model="test/model")
     calls = []
 
-    def fake_ask(prompt, pcm):
-        calls.append(prompt)
+    def fake_ask(pcm, attempt):
+        calls.append(attempt)
         text = "Ok." if len(calls) == 1 else _words(40)
         return {"text": text, "latency": 0.1, "cost": 0.0}
 
@@ -226,15 +407,15 @@ def test_a_thin_answer_is_re_asked_and_the_longer_one_wins():
     assert len(calls) == 2, "the first reading was too thin to accept"
     assert len(result["text"].split()) == 40
     assert result["attempts"] == 2
-    assert "first word to the last" in calls[1], "the retry asks differently"
+    assert calls == [1, 2], "the second ask is a different question"
 
 
 def test_a_good_first_answer_is_not_re_asked():
     transcriber = GeminiTranscriber(model="test/model")
     calls = []
 
-    def fake_ask(prompt, pcm):
-        calls.append(prompt)
+    def fake_ask(pcm, attempt):
+        calls.append(attempt)
         return {"text": _words(60), "latency": 0.1, "cost": 0.0}
 
     transcriber._ask = fake_ask
@@ -247,7 +428,7 @@ def test_the_longest_reading_is_kept_when_neither_attempt_is_complete():
     """Below the split floor there is nothing left to try, so keep the best."""
     transcriber = GeminiTranscriber(model="test/model")
     answers = iter(["Ok.", "Ok, je vais faire ca."])
-    transcriber._ask = lambda prompt, pcm: {
+    transcriber._ask = lambda pcm, attempt: {
         "text": next(answers), "latency": 0.1, "cost": 0.0,
     }
     result = transcriber.transcribe(1, _pcm(15))
@@ -260,7 +441,7 @@ def test_the_longest_reading_is_kept_when_neither_attempt_is_complete():
 def _split_aware_ask(calls, whole_limit=40):
     """Abandon anything longer than *whole_limit* seconds, answer the rest."""
 
-    def ask(prompt, pcm):
+    def ask(pcm, attempt):
         calls.append(pcm)
         seconds = len(pcm) / BYTES_PER_SEC
         if seconds > whole_limit:

@@ -249,10 +249,38 @@ class STTConfig:
     # levelled in two parts. Four of six shapings lost their content; flash
     # and pro lost none. A session that is silently 30% short is worse than
     # one that costs three times as much.
+    # Which route reads a chunk, and the model each route uses. Voxtral
+    # Transcribe reads this team's table talk cleaner than the chat models do,
+    # and it takes the vocabulary as context_bias; Gemini takes audio as a
+    # content part of a chat request and the vocabulary as prose in the prompt.
+    # The widget flips it, and a config is read once when the bot boots, so the
+    # switch applies at the next start rather than to a session already open.
+    # Empty means "read it off the model id", so an .env written before the
+    # second route existed keeps working: it sets STT_CHUNK_MODEL to a Gemini
+    # model and nothing else, and following that is better than silently sending
+    # a chat model's id to the transcription endpoint.
+    chunk_provider: str = field(
+        default_factory=lambda: _env_str("STT_CHUNK_PROVIDER", "")
+    )
     chunk_model: str = field(
         default_factory=lambda: _env_str(
-            "STT_CHUNK_MODEL", "google/gemini-2.5-flash"
+            "STT_CHUNK_MODEL", "mistralai/voxtral-small-transcribe-3-0"
         )
+    )
+    chunk_model_gemini: str = field(
+        default_factory=lambda: _env_str(
+            "STT_CHUNK_MODEL_GEMINI", "google/gemini-2.5-flash"
+        )
+    )
+    # Voxtral is told what language the audio is in; it is not a prompt, and the
+    # route takes no prompt at all.
+    chunk_language: str = field(
+        default_factory=lambda: _env_str("STT_CHUNK_LANGUAGE", "fr")
+    )
+    # The key context_bias is sent under, from the endpoints API's tag for the
+    # provider serving the model.
+    bias_provider: str = field(
+        default_factory=lambda: _env_str("STT_BIAS_PROVIDER", "mistral")
     )
     # A ceiling on the damage a runaway does, not a length the model needs. The
     # longest chunk the span cap allows is 90s, which at the measured 3 words a
@@ -288,6 +316,21 @@ class STTConfig:
             "describe the audio.",
         )
     )
+    @property
+    def active_chunk_provider(self) -> str:
+        """Which route to use: the one named, or the one the model id implies."""
+        named = (self.chunk_provider or "").strip().lower()
+        if named:
+            return named
+        return "gemini" if "gemini" in self.chunk_model.lower() else "voxtral"
+
+    @property
+    def active_chunk_model(self) -> str:
+        """The model the selected route will actually call."""
+        if self.active_chunk_provider == "gemini":
+            return self.chunk_model_gemini
+        return self.chunk_model
+
     # The proper nouns to expect, one per line, attached to every chunk. A
     # relative path is resolved against the project root. Empty turns it off,
     # and so does a missing file. Read fresh before each request, so adding a
