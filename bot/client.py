@@ -90,6 +90,29 @@ def _clock(at: object) -> str:
         return ""
 
 
+def member_names(members) -> list[str]:
+    """The names the people in a voice channel answer to, bots left out.
+
+    Display names here are built as "pseudo (prenom)" - "Mandal (Olivier)" - and
+    both halves are said out loud, so both go in, as pairing.vocabulary does for
+    the sheet's Joueur cells. The account name is left out: nobody says it.
+    """
+    found: list[str] = []
+    for member in members:
+        if getattr(member, "bot", False):
+            continue
+        for name in (
+            getattr(member, "nick", None),
+            getattr(member, "global_name", None),
+            getattr(member, "display_name", None),
+        ):
+            pseudo, prenom = pairing.split_nickname(name or "")
+            for part in (pseudo, prenom):
+                if part and part not in found:
+                    found.append(part)
+    return found
+
+
 def _short_model(model: str) -> str:
     """mistralai/voxtral-small-24b-2507-stt -> voxtral, for a readable label."""
     tail = (model or "").rsplit("/", 1)[-1]
@@ -117,6 +140,9 @@ class STTBot:
 
         # -- transcript session state --
         self._transcript_channel: discord.abc.Messageable | None = None
+        # The voice channel being transcribed, so someone joining it mid-session
+        # can have their names added to the session glossary.
+        self._voice_channel_id: int | None = None
         self._session_lines: list[str] = []
         # (speaker, verbatim text) for the cleanup pass, which needs the raw
         # words rather than the already-markdown-formatted lines.
@@ -193,6 +219,16 @@ class STTBot:
             if before.channel:
                 self._send_command("LEAVE", member.id)
 
+            # Someone joining mid-session is a name the meeting will now say.
+            if (
+                self._transcript_channel is not None
+                and after.channel is not None
+                and after.channel.id == self._voice_channel_id
+            ):
+                added = member_names([member])
+                if added:
+                    glossary.set_session_terms(glossary.session_terms() + added)
+
     # -- lifecycle ---------------------------------
 
     def _note_activity(self) -> None:
@@ -264,35 +300,30 @@ class STTBot:
                 await ctx.send(f"Already listening in **{voice_channel}**.")
                 return
 
-            # The pairing sheet is read before dialling, so its names are in
-            # place for the first chunk rather than the second. A sheet that
-            # cannot be read is reported and the session runs without it: it is
-            # an improvement, not a requirement.
-            vocabulary = 0
+            # The pairing sheet is read before dialling. A sheet that cannot be
+            # read is reported and the session runs without it: it is an
+            # improvement, not a requirement. Nothing is written yet: closing a
+            # running session below clears the session list, so the list is
+            # published only once the bot is in the channel.
+            sheet_terms: list[str] = []
             if link.strip():
                 try:
-                    tabs, _skipped = pairing.collect(
-                        pairing.sheet_id_from(link.strip())
+                    # urllib blocks; keep it off the event loop.
+                    tabs, _skipped = await asyncio.to_thread(
+                        pairing.collect, pairing.sheet_id_from(link.strip())
                     )
                 except Exception as exc:
                     logger.error("Could not read the pairing sheet: %s", exc)
                     await ctx.send(f"Could not read that pairing sheet: {exc}")
                     tabs = []
-                vocabulary = glossary.set_session_terms(pairing.vocabulary(tabs))
+                sheet_terms = pairing.vocabulary(tabs)
             else:
                 # A sheet read earlier in this meeting is the right list, and
                 # !pairing is how most of them get read: the sheet is a format,
                 # a new one is made for every meeting. One from a meeting that
                 # was never transcribed is not, and glossary.session_terms
                 # drops that on the file's age.
-                adopted = glossary.session_terms()
-                if not adopted:
-                    # Nothing to adopt. Clear the file anyway: the reader that
-                    # builds the prompt takes the session list whatever its age,
-                    # so a list left here would still reach the model while the
-                    # message below said there were no names.
-                    glossary.set_session_terms([])
-                vocabulary = len(adopted)
+                sheet_terms = glossary.session_terms()
 
             # Check permissions BEFORE dialling. Without Connect, Discord never
             # completes the voice handshake and discord.py raises a bare
@@ -359,8 +390,17 @@ class STTBot:
                 await ctx.send(f"Could not join **{voice_channel}**: {exc}")
                 return
 
+            # The people in the channel are names the meeting says out loud,
+            # sheet or no sheet: a pre-meeting has no pairing sheet yet. Written
+            # whether or not there is anything, so a stale list from another
+            # meeting never reaches the model under this one.
+            people = member_names(voice_channel.members)
+            glossary.set_session_terms(sheet_terms + people)
+            vocabulary = len(sheet_terms)
+
             # Only open the session once the bot is actually in the channel.
             self._transcript_channel = target
+            self._voice_channel_id = voice_channel.id
             self._session_lines = []
             self._session_raw = []
             self._pending = []
@@ -372,6 +412,8 @@ class STTBot:
             learned = (
                 f" {vocabulary} name(s) from the pairing sheet." if vocabulary else ""
             )
+            if people:
+                learned += f" {len(people)} name(s) from the people here."
             await target.send(
                 f"Listening in **{voice_channel}**.{learned} "
                 f"Use {discord_cfg.command_prefix}stop to finish."
@@ -700,6 +742,7 @@ class STTBot:
         glossary.set_session_terms([])
 
         self._transcript_channel = None
+        self._voice_channel_id = None
         self._session_lines = []
         self._session_raw = []
         self._entries = []
@@ -729,7 +772,13 @@ class STTBot:
         stamp = (started or datetime.now(timezone.utc)).astimezone()
         text = [entry["line"] for entry in entries]
         path = self._save_session(entries, text, stamp)
-        await self._post_transcript(channel, path, text, entries)
+        try:
+            await self._post_transcript(channel, path, text, entries)
+        finally:
+            # The session is over whether or not the post went through. Without
+            # this the widget kept saying WRITING after every session that had
+            # something in it: only the empty and channel-less paths said so.
+            write_state("sleeping")
 
     def _append_to_session(self, line: str) -> None:
         """Write one chunk's transcript the moment it exists."""
