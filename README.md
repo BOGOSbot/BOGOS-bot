@@ -9,7 +9,7 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 | Command | What it does |
 |---|---|
 | `!transcript [pairing sheet link]` | Joins your voice channel and starts listening. With a link, it reads the teams, players and armies out of the sheet first and teaches them to the transcriber |
-| `!stop` | Finishes the queued speech and posts the transcript |
+| `!stop` | Finishes the queued speech and posts the session as a clean copy plus the turns it set aside |
 | `!pairing <sheets link>` | Reports who still owes matchups or a list, per team tab, and teaches the transcriber the same names |
 
 ## How transcription works
@@ -78,6 +78,32 @@ silence and transcribed as one moment. Bounding the span took that session from
 The utterance that trips the check opens the next chunk rather than joining the
 one it just exceeded, which is what makes the bound hold — appending it first
 and flushing after would leave the very gap being excluded inside the chunk.
+
+### What never reaches the channel
+
+A turn needs 0.3 seconds of audio above -45 dBFS, counted in 20 ms frames on the
+raw signal (`STT_VOICED_DBFS`, `STT_MIN_VOICED_SECONDS`). The average level could
+not tell a sentence from a click on a hiss; this can. Measured on the 26 October
+meeting (13 people, 1,222 utterances), every line of real speech cleared it and
+what fell under it was room noise and clicks the model wrote down as "Thank
+you.", "Merci." or a lone ".", plus other people's voices leaking out of an open
+mic's speakers, transcribed again under the wrong name (37 of 38 of those
+overlapped someone else talking). Dropping them also stopped that noise from
+closing everybody else's turn: 458 of 1,115 turns were cut by it.
+
+A reading that is only punctuation, or exactly a memorised "Thank you." or
+"thanks", is thrown away in `stt/artifacts.py`. On that transcript 173 lines were
+a lone "." and 49 were "Thank you." in a French conversation. "Merci", "Oui" and
+"OK" stay, because the table says them for real.
+
+Nothing else is thrown away. At `!stop` the session is sorted into two files, the
+clean copy and every turn taken out of it (backchannels, words put on a breath,
+sentences cut off before they said anything), both keeping each turn's time, so a
+line that should not have gone is found in the second file at the same minute and
+put back by hand. A short turn survives only if it names something the glossary
+knows: "Orks." or "En disruption." in a pairing meeting is an answer, not a noise.
+That rule is aggressive on purpose; a real "Oui." to a question goes to the second
+file too. The raw transcript stays on disk beside the two.
 
 ### Two ways the model drops content, and what stops them
 
@@ -239,7 +265,7 @@ The widget's REC latch decides whether any of it is written. With it off, nothin
 ## Caveats
 
 - Do not trust a clean-speech benchmark for this job. On real French Warhammer speech, models that score well on read speech replace the proper nouns with common French words. Ours was chosen on the table, not on the benchmark.
-- The silence floor (`STT_MIN_SPEECH_DBFS`) is set by eye. The 77 recorded utterances run from -96 to -40 dBFS with no gap in between, so there is nothing to tune it against yet.
+- The silence floor (`STT_MIN_SPEECH_DBFS`) is set by eye: the 77 recorded utterances run from -96 to -40 dBFS with no gap in between, so there is nothing to tune it against. The gate that now does the work is measured instead, 0.3 s above -45 dBFS on the 26 October meeting.
 - `!pairing` reads the sheet over its public link export and sends no credentials. If the sheet is private, it will not work.
 - Both the session recorder and the per-utterance dumps write other people's voices to disk. The widget's REC latch turns both off and picks the folder; that latch wins over `.env`. Ask people before you turn it on.
 - `CLEANUP_ENABLED` is off. A text pass cannot tell a misheard word from a real one, so it has nothing useful to do.
