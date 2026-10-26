@@ -199,8 +199,8 @@ in a public repository: your armies, your players, the venue, the gite.
 It is paid on every chunk, which is what decides its size. The whole corpus from
 the rules repository is 11,303 terms, about 41,900 tokens — 95% of a one-minute
 chunk, and 8.6x the cost of a session. Scoping it to the three armies of one game
-is about 3,000. The list that ships is 114 terms, 452 tokens measured per call,
-and holds the vocabulary that is the same for everybody: the factions under both
+is about 3,000. The list that ships is 128 terms, a few hundred tokens a call
+(452 measured at 114), and holds the vocabulary that is the same for everybody: the factions under both
 their printed and their spoken names, the rule terms, the wargear people name out
 loud, and the loanwords and tools a tournament week runs on.
 
