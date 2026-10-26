@@ -12,6 +12,13 @@
 # The project root is derived from this file's location, so the widget travels
 # with the repository instead of hardcoding a path.
 
+param(
+    # Dev aid: render the panel and tray marks into a folder and exit. An icon
+    # is judged by looking at it, and this is how that look is produced without
+    # opening the panel on top of whatever is on screen.
+    [string]$PreviewDir = ''
+)
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -35,6 +42,9 @@ $statusFile = Join-Path $root 'status.json'
 # writes one line of it and leaves every other line exactly as it found it.
 # .gitignore keeps it out of the repository; .env.example is the template.
 $envFile = Join-Path $root '.env'
+# The BOGOS mark. Cut from the rules app's favicon by tools/make_widget_icon.ps1,
+# which records where it comes from and how the checkerboard is removed.
+$iconFile = Join-Path $PSScriptRoot 'bogos-icon.png'
 
 # Glyphs built from code points rather than typed into the file: Windows
 # PowerShell reads a .ps1 as ANSI unless it carries a byte-order mark, and these
@@ -63,6 +73,41 @@ function New-DisplayFont($size) {
 
 function New-UiFont($size) {
     return New-Object System.Drawing.Font('Segoe UI', $size)
+}
+
+# --- the mark ----------------------------------------------------------------
+# One source image, scaled to whatever a face of the widget needs. Read once and
+# held: a Bitmap owns an open file handle, and the tray would reopen it on every
+# state change.
+
+function Get-Mark {
+    if (-not $script:markSource) {
+        $script:markSource = [System.Drawing.Bitmap]::FromFile($iconFile)
+    }
+    return $script:markSource
+}
+
+function New-MarkBitmap($size) {
+    $src = Get-Mark
+    $bmp = New-Object System.Drawing.Bitmap($size, $size)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $g.Clear([System.Drawing.Color]::Transparent)
+    $g.DrawImage($src, 0, 0, $size, $size)
+    $g.Dispose()
+    return $bmp
+}
+
+function New-MarkIcon($size) {
+    # GetHicon returns a copy, so the bitmap can go; the icon is assigned once
+    # per face and lives as long as the panel. Icon.FromHandle does not own the
+    # handle, and one per face is not a leak worth a P/Invoke to destroy.
+    $bmp = New-MarkBitmap $size
+    $handle = $bmp.GetHicon()
+    $bmp.Dispose()
+    return [System.Drawing.Icon]::FromHandle($handle)
 }
 
 # --- the case ---------------------------------------------------------------
@@ -356,23 +401,78 @@ function Set-Lamp($lamp, $fill) {
 
 function New-TrayIcon($fill, $ring) {
     # The tray is the panel's second face: minimising must not cost the one bit
-    # that matters, which is whether anything is being captured.
-    $bmp = New-Object System.Drawing.Bitmap(16, 16)
+    # that matters, which is whether anything is being captured. So the mark is
+    # the icon, and the lamp is a dot in the corner of it the mark leaves empty.
+    # 32px, not 16: the shell asks for whatever size its scaling needs, and a
+    # mark this detailed survives a downscale better than an upscale.
+    $size = 32
+    $bmp = New-MarkBitmap $size
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.Clear([System.Drawing.Color]::Transparent)
-    if ($fill.ToArgb() -ne 0) {
+    # Top left: the one corner of the mark the crown and the flame leave empty,
+    # so the lamp sits beside the mark instead of on its face.
+    $dot = 9
+    $x = 1
+    $y = 1
+    # A collar in the case colour cuts the dot out of whatever is behind it; on
+    # a light taskbar the mark's own edge is what would otherwise swallow it.
+    $collar = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(230, $case.R, $case.G, $case.B))
+    $g.FillEllipse($collar, ($x - 1), ($y - 1), ($dot + 2), ($dot + 2))
+    $collar.Dispose()
+    if ($fill.A -gt 0) {
         $brush = New-Object System.Drawing.SolidBrush($fill)
-        $g.FillEllipse($brush, 2, 2, 11, 11)
+        $g.FillEllipse($brush, $x, $y, $dot, $dot)
         $brush.Dispose()
     }
     $pen = New-Object System.Drawing.Pen($ring, 1.5)
-    $g.DrawEllipse($pen, 2, 2, 11, 11)
+    $g.DrawEllipse($pen, $x, $y, $dot, $dot)
     $pen.Dispose()
     $g.Dispose()
     $handle = $bmp.GetHicon()
     $bmp.Dispose()
     return [System.Drawing.Icon]::FromHandle($handle)
+}
+
+# An icon is judged by eye. -PreviewDir renders the three tray marks and the
+# panel mark, on the light and dark strips the shell shows them on, and exits
+# without opening the panel.
+if ($PreviewDir) {
+    if (-not (Test-Path $PreviewDir)) {
+        New-Item -ItemType Directory -Path $PreviewDir -Force | Out-Null
+    }
+    $states = [ordered]@{
+        busy    = (New-TrayIcon $amber $case)
+        idle    = (New-TrayIcon $screenInk $case)
+        stopped = (New-TrayIcon ([System.Drawing.Color]::Transparent) $screenInk)
+    }
+    $sheet = New-Object System.Drawing.Bitmap(560, 370)
+    $g = [System.Drawing.Graphics]::FromImage($sheet)
+    $g.Clear([System.Drawing.Color]::FromArgb(243, 243, 243))
+    $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(32, 32, 32))), 0, 180, 560, 190)
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $y = 12
+    foreach ($name in $states.Keys) {
+        $img = $states[$name].ToBitmap()
+        foreach ($strip in @(0, 180)) {
+            $x = 18
+            foreach ($s in @(16, 20, 24, 32, 48)) {
+                $g.DrawImage($img, $x, ($y + $strip + 20), $s, $s)
+                $x += $s + 14
+            }
+        }
+        $img.Dispose()
+        $y += 50
+    }
+    $panelMark = New-MarkBitmap 48
+    $g.DrawImage($panelMark, 430, 24, 48, 48)
+    $panelMark.Dispose()
+    $g.Dispose()
+    $out = Join-Path $PreviewDir 'tray-marks.png'
+    $sheet.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+    $sheet.Dispose()
+    Write-Output $out
+    exit 0
 }
 
 # --- the panel --------------------------------------------------------------
@@ -385,6 +485,7 @@ $form.Size = New-Object System.Drawing.Size($W, $H)
 $form.TopMost = $false
 $form.ShowInTaskbar = $false
 $form.BackColor = $case
+$form.Icon = New-MarkIcon 32
 $form.Add_Paint({
     param($sender, $e)
     # A hard 1px edge, no rounding and no shadow. It is the edge of a case.
@@ -393,12 +494,22 @@ $form.Add_Paint({
     $pen.Dispose()
 })
 
+# The mark, then the wordmark: the panel says what it is before it says what it
+# is doing.
+$mark = New-Object System.Windows.Forms.PictureBox
+$mark.Location = New-Object System.Drawing.Point(($PAD - 2), 3)
+$mark.Size = New-Object System.Drawing.Size(24, 24)
+$mark.SizeMode = 'Zoom'
+$mark.BackColor = $case
+$mark.Image = New-MarkBitmap 48
+$form.Controls.Add($mark)
+
 $identity = New-Object System.Windows.Forms.Label
 $identity.Text = 'BOGOS'
 $identity.Font = New-DisplayFont 12
 $identity.ForeColor = $ivory
 $identity.BackColor = $case
-$identity.Location = New-Object System.Drawing.Point($PAD, 8)
+$identity.Location = New-Object System.Drawing.Point(($PAD + 26), 7)
 $identity.AutoSize = $true
 $form.Controls.Add($identity)
 
@@ -614,6 +725,7 @@ function Show-KeyDialog {
     $dlg.Size = New-Object System.Drawing.Size($dlgW, $dlgH)
     $dlg.BackColor = $case
     $dlg.ShowInTaskbar = $false
+    $dlg.Icon = $form.Icon
     $dlg.KeyPreview = $true
     $dlg.Add_Paint({
         param($sender, $e)
@@ -886,7 +998,7 @@ $grab = New-Object System.Drawing.Point(0, 0)
 $startDrag = { param($sender, $e) $script:drag = $true; $script:grab = $e.Location }
 $doDrag = { param($sender, $e) if ($script:drag) { $form.Location = New-Object System.Drawing.Point(($form.Location.X - $script:grab.X + $e.X), ($form.Location.Y - $script:grab.Y + $e.Y)) } }
 $endDrag = { param($sender, $e) $script:drag = $false }
-foreach ($c in @($form, $identity, $seam, $wellPanel, $stateLamp, $stateWord, $subLine, $uptime)) {
+foreach ($c in @($form, $mark, $identity, $seam, $wellPanel, $stateLamp, $stateWord, $subLine, $uptime)) {
     $c.Add_MouseDown($startDrag)
     $c.Add_MouseMove($doDrag)
     $c.Add_MouseUp($endDrag)

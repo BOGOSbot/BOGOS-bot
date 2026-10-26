@@ -220,9 +220,9 @@ Cloud transcription also needs `OPENROUTER_API_KEY`, from <https://openrouter.ai
 .venv/bin/python main.py
 ```
 
-On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio. `widget/BOGOS-widget.ps1` is the front panel: a readout of what the bot is doing, one key that starts and stops it, a REC latch that decides whether the voices are written to disk, and a key line that puts the OpenRouter key into `.env`. Minimising leaves it in the tray, where the icon doubles as the status light. It can only show a log for bots it started itself.
+On Windows use `./run.ps1`. Add `-RecordDir E:\recordings` to also save the session audio. `widget/BOGOS-widget.ps1` is the front panel: a readout of what the bot is doing, one key that starts and stops it, a REC latch that decides whether the voices are written to disk, and a key line that puts the OpenRouter key into `.env`. Minimising leaves it in the tray, where the BOGOS mark is the icon and a lamp dot on its corner is the status light. The mark is cut from the rules app's favicon by `tools/make_widget_icon.ps1`, which records the source and removes the editor's checkerboard. The panel can only show a log for bots it started itself.
 
-![The widget while capturing](widget/screenshot.png)
+![The widget while idle](widget/screenshot.png)
 
 Every `!transcript` gets its own folder under the recordings root, named in local
 time, so one conversation's material is in one place:
