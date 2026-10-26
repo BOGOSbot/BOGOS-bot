@@ -19,9 +19,277 @@ param(
     [string]$PreviewDir = ''
 )
 
+# The widget runs from a hidden console, so an error that stops it would
+# otherwise leave no trace at all. It goes here instead.
+trap {
+    $log = Join-Path $PSScriptRoot 'widget-error.log'
+    Add-Content -Path $log -Value ((Get-Date -Format s) + ' ' + ($_ | Out-String))
+    break
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+# --- the controls -----------------------------------------------------------
+# Stock WinForms draws square, flat, 1990s controls, and it cannot be styled
+# out of that from PowerShell. These few owner-drawn ones are what give the
+# panel its rounded key, glowing lamps and recessed well. C# 5 only: Windows
+# PowerShell compiles this with the .NET Framework compiler.
+if (-not ('BogosUi.PillButton' -as [type])) {
+    Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing' -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+namespace BogosUi
+{
+    public static class Shapes
+    {
+        public static GraphicsPath Round(RectangleF r, float radius)
+        {
+            GraphicsPath p = new GraphicsPath();
+            float d = Math.Min(radius * 2f, Math.Min(r.Width, r.Height));
+            if (d <= 1f) { p.AddRectangle(r); return p; }
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        public static Color Behind(Control c)
+        {
+            return c.Parent != null ? c.Parent.BackColor : c.BackColor;
+        }
+    }
+
+    // The case: a borderless window with a drop shadow, and on Windows 11 the
+    // system's own rounded corners and hairline edge.
+    public class CaseForm : Form
+    {
+        [DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        public Color EdgeColor = Color.Empty;
+        public bool SystemEdge;
+
+        public CaseForm()
+        {
+            DoubleBuffered = true;
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ClassStyle |= 0x20000; // CS_DROPSHADOW
+                return cp;
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            try
+            {
+                int round = 2; // DWMWCP_ROUND
+                SystemEdge = DwmSetWindowAttribute(Handle, 33, ref round, 4) == 0;
+                if (SystemEdge && !EdgeColor.IsEmpty)
+                {
+                    int bgr = EdgeColor.R | (EdgeColor.G << 8) | (EdgeColor.B << 16);
+                    DwmSetWindowAttribute(Handle, 34, ref bgr, 4);
+                }
+            }
+            catch (Exception) { SystemEdge = false; }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            // Before Windows 11 there are no system corners, so the case draws
+            // its own hairline edge instead.
+            if (!SystemEdge && !EdgeColor.IsEmpty)
+            {
+                using (Pen pen = new Pen(EdgeColor, 1f))
+                {
+                    e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+                }
+            }
+        }
+    }
+
+    // A recessed, rounded readout.
+    public class Well : Panel
+    {
+        public Color Edge = Color.Empty;
+        public float Radius = 8f;
+
+        public Well()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e) { }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Shapes.Behind(this));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath p = Shapes.Round(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Radius))
+            {
+                using (SolidBrush b = new SolidBrush(BackColor)) { g.FillPath(b, p); }
+                if (!Edge.IsEmpty)
+                {
+                    using (Pen pen = new Pen(Edge, 1f)) { g.DrawPath(pen, p); }
+                }
+            }
+        }
+    }
+
+    // A lamp: a dot that glows when it is lit.
+    public class Lamp : Control
+    {
+        public Color Fill = Color.Gray;
+        public bool Glow;
+        public int Core = 9;
+
+        public Lamp()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+
+        public void Set(Color fill, bool glow)
+        {
+            if (fill.ToArgb() == Fill.ToArgb() && glow == Glow) { return; }
+            Fill = fill;
+            Glow = glow;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Shapes.Behind(this));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float cx = Width / 2f, cy = Height / 2f;
+            if (Glow)
+            {
+                float[] sizes = { Core + 8f, Core + 4f };
+                int[] alphas = { 34, 64 };
+                for (int i = 0; i < sizes.Length; i++)
+                {
+                    using (SolidBrush halo = new SolidBrush(Color.FromArgb(alphas[i], Fill)))
+                    {
+                        g.FillEllipse(halo, cx - sizes[i] / 2f, cy - sizes[i] / 2f, sizes[i], sizes[i]);
+                    }
+                }
+            }
+            using (SolidBrush b = new SolidBrush(Fill))
+            {
+                g.FillEllipse(b, cx - Core / 2f, cy - Core / 2f, Core, Core);
+            }
+        }
+    }
+
+    // A rounded button that keeps everything a Button does - focus, keyboard,
+    // Click, accessibility - and draws itself. With no fill it is a text row.
+    public class PillButton : Button
+    {
+        public Color Fill = Color.Empty;
+        public Color FillHover = Color.Empty;
+        public Color FillDown = Color.Empty;
+        public Color Border = Color.Empty;
+        public Color FocusBorder = Color.Empty;
+        public Color HoverInk = Color.Empty;
+        public Color Dot = Color.Empty;
+        public bool DotGlow;
+        public float Radius = 7f;
+        bool hover, down;
+
+        public PillButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            UseVisualStyleBackColor = false;
+            Cursor = Cursors.Hand;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { down = true; Invalidate(); } base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+        protected override void OnPaintBackground(PaintEventArgs e) { }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.Clear(Shapes.Behind(this));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            Color fill = Fill;
+            if (down && !FillDown.IsEmpty) { fill = FillDown; }
+            else if (hover && !FillHover.IsEmpty) { fill = FillHover; }
+
+            RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            using (GraphicsPath p = Shapes.Round(r, Radius))
+            {
+                if (!fill.IsEmpty && fill.A > 0)
+                {
+                    using (SolidBrush b = new SolidBrush(fill)) { g.FillPath(b, p); }
+                }
+                Color edge = Border;
+                if (Focused && ShowFocusCues && !FocusBorder.IsEmpty) { edge = FocusBorder; }
+                if (!edge.IsEmpty && edge.A > 0)
+                {
+                    using (Pen pen = new Pen(edge, 1f)) { g.DrawPath(pen, p); }
+                }
+            }
+
+            int x = Padding.Left;
+            if (!Dot.IsEmpty)
+            {
+                float core = 8f;
+                float cy = Height / 2f;
+                float cx = x + core / 2f + 2f;
+                if (DotGlow)
+                {
+                    using (SolidBrush halo = new SolidBrush(Color.FromArgb(56, Dot)))
+                    {
+                        g.FillEllipse(halo, cx - (core + 6f) / 2f, cy - (core + 6f) / 2f, core + 6f, core + 6f);
+                    }
+                }
+                using (SolidBrush b = new SolidBrush(Dot)) { g.FillEllipse(b, cx - core / 2f, cy - core / 2f, core, core); }
+                x += (int)core + 10;
+            }
+
+            Color ink = ForeColor;
+            if (!Enabled) { ink = Color.FromArgb(120, ForeColor); }
+            else if (hover && !HoverInk.IsEmpty) { ink = HoverInk; }
+
+            TextFormatFlags flags = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine |
+                                    TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+            bool left = TextAlign == ContentAlignment.MiddleLeft || TextAlign == ContentAlignment.TopLeft ||
+                        TextAlign == ContentAlignment.BottomLeft;
+            flags |= left ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter;
+            Rectangle text = new Rectangle(x, 0, Width - x - Padding.Right, Height);
+            TextRenderer.DrawText(g, Text, Font, text, ink, flags);
+        }
+    }
+}
+'@
+}
 
 # Continue, not Stop: a transient failure in the refresh timer must not kill a
 # window the user is looking at.
@@ -51,6 +319,9 @@ $iconFile = Join-Path $PSScriptRoot 'bogos-icon.png'
 # would come back mangled.
 $dash = [string][char]0x2013
 $cross = [string][char]0x00D7
+# The system icon font's minimise and close glyphs.
+$glyphMinimise = [string][char]0xE921
+$glyphClose = [string][char]0xE8BB
 $ellipsis = [string][char]0x2026
 
 # --- type -------------------------------------------------------------------
@@ -71,8 +342,24 @@ function New-DisplayFont($size) {
     return New-Object System.Drawing.Font($displayFace, $size, $displayStyle)
 }
 
+# Segoe UI Variable is the Windows 11 text face; Segoe UI is its Windows 10
+# predecessor. The window glyphs come from the system icon font, Fluent on 11
+# and MDL2 on 10, so minimise and close look like every other window's.
+$uiFace = 'Segoe UI'
+$glyphFace = ''
+try {
+    if ($families -contains 'Segoe UI Variable Text') { $uiFace = 'Segoe UI Variable Text' }
+    if ($families -contains 'Segoe Fluent Icons') { $glyphFace = 'Segoe Fluent Icons' }
+    elseif ($families -contains 'Segoe MDL2 Assets') { $glyphFace = 'Segoe MDL2 Assets' }
+} catch { }
+
 function New-UiFont($size) {
-    return New-Object System.Drawing.Font('Segoe UI', $size)
+    return New-Object System.Drawing.Font($uiFace, $size)
+}
+
+function New-GlyphFont($size) {
+    if ($glyphFace) { return New-Object System.Drawing.Font($glyphFace, $size) }
+    return New-UiFont ($size + 2)
 }
 
 # --- the mark ----------------------------------------------------------------
@@ -128,22 +415,33 @@ $recOff = [System.Drawing.Color]::FromArgb(74, 59, 55)
 $keyFace = [System.Drawing.Color]::FromArgb(42, 39, 35)
 $keyFaceHover = [System.Drawing.Color]::FromArgb(51, 47, 41)
 $keyFaceDown = [System.Drawing.Color]::FromArgb(36, 33, 30)
+# START is the one lit key on the case: amber, the colour of "the bot works".
+$amberHover = [System.Drawing.Color]::FromArgb(242, 176, 82)
+$amberDown = [System.Drawing.Color]::FromArgb(210, 143, 48)
+$amberInk = [System.Drawing.Color]::FromArgb(33, 24, 12)
+$recFill = [System.Drawing.Color]::FromArgb(48, 30, 27)
+$recEdge = [System.Drawing.Color]::FromArgb(110, 52, 44)
 
 # --- the grid ---------------------------------------------------------------
-# 4px units. 352x176 is wide and short like a rack unit: it reads as gear and
-# covers less of whatever is behind it than a square card would.
-$W = 352
-$H = 190
+# 4px units. Wide and short like a rack unit: it reads as gear and covers less
+# of whatever is behind it than a square card would. Rows are 20px: at 15 the
+# 8pt text had its top shaved off.
+$W = 360
 $PAD = 14
-$RAIL_H = 30
-$WELL_Y = 34
-$WELL_H = 58
-$KEY_Y = 98
-$KEY_W = 212
-$KEY_H = 32
-$DEST_Y = 133
-$API_Y = 150
-$LOG_Y = 167
+$RAIL_H = 38
+$WELL_Y = 46
+$WELL_H = 62
+$KEY_Y = 120
+$KEY_W = 216
+$KEY_H = 36
+$FOOT_Y = 168
+$ROW_H = 20
+$DEST_Y = $FOOT_Y + 8
+$API_Y = $DEST_Y + $ROW_H
+$LOG_Y = $API_Y + $ROW_H
+$H = $LOG_Y + $ROW_H + 12
+# The label column of the footer rows.
+$TAG_W = 52
 
 function Get-BotProcess {
     # The bot is a python process running main.py. Nothing in this script's own
@@ -380,23 +678,18 @@ function Save-Position {
 function New-Lamp($x, $y, $diameter, $fill) {
     # A lamp is a circle, not a coloured label: the shape is what makes it read
     # as a light on the case rather than as punctuation in the text.
-    $lamp = New-Object System.Windows.Forms.Panel
-    $lamp.Location = New-Object System.Drawing.Point($x, $y)
-    $lamp.Size = New-Object System.Drawing.Size($diameter, $diameter)
-    $lamp.Tag = $fill.ToArgb()
-    $lamp.Add_Paint({
-        param($sender, $e)
-        $e.Graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int]$sender.Tag))
-        $e.Graphics.FillEllipse($brush, 0, 0, $sender.Width - 1, $sender.Height - 1)
-        $brush.Dispose()
-    })
+    # A lit lamp glows, so the control is larger than the dot; ($x, $y) is
+    # still where the dot's own box starts.
+    $lamp = New-Object BogosUi.Lamp
+    $lamp.Core = $diameter
+    $lamp.Location = New-Object System.Drawing.Point(($x - 5), ($y - 5))
+    $lamp.Size = New-Object System.Drawing.Size(($diameter + 10), ($diameter + 10))
+    $lamp.Fill = $fill
     return $lamp
 }
 
-function Set-Lamp($lamp, $fill) {
-    $lamp.Tag = $fill.ToArgb()
-    $lamp.Invalidate()
+function Set-Lamp($lamp, $fill, [bool]$glow = $false) {
+    $lamp.Set($fill, $glow)
 }
 
 function New-TrayIcon($fill, $ring) {
@@ -476,7 +769,8 @@ if ($PreviewDir) {
 }
 
 # --- the panel --------------------------------------------------------------
-$form = New-Object System.Windows.Forms.Form
+$form = New-Object BogosUi.CaseForm
+$form.EdgeColor = $hair
 $form.FormBorderStyle = 'None'
 $form.StartPosition = 'Manual'
 $form.Location = Load-Position
@@ -485,23 +779,17 @@ $form.Size = New-Object System.Drawing.Size($W, $H)
 $form.TopMost = $false
 $form.ShowInTaskbar = $false
 $form.BackColor = $case
+$form.Text = 'BOGOS bot'
 $form.Icon = New-MarkIcon 32
-$form.Add_Paint({
-    param($sender, $e)
-    # A hard 1px edge, no rounding and no shadow. It is the edge of a case.
-    $pen = New-Object System.Drawing.Pen($hair, 1)
-    $e.Graphics.DrawRectangle($pen, 0, 0, $sender.Width - 1, $sender.Height - 1)
-    $pen.Dispose()
-})
 
 # The mark, then the wordmark: the panel says what it is before it says what it
 # is doing.
 $mark = New-Object System.Windows.Forms.PictureBox
-$mark.Location = New-Object System.Drawing.Point(($PAD - 2), 3)
-$mark.Size = New-Object System.Drawing.Size(24, 24)
+$mark.Location = New-Object System.Drawing.Point($PAD, 8)
+$mark.Size = New-Object System.Drawing.Size(22, 22)
 $mark.SizeMode = 'Zoom'
 $mark.BackColor = $case
-$mark.Image = New-MarkBitmap 48
+$mark.Image = New-MarkBitmap 44
 $form.Controls.Add($mark)
 
 $identity = New-Object System.Windows.Forms.Label
@@ -509,9 +797,49 @@ $identity.Text = 'BOGOS'
 $identity.Font = New-DisplayFont 12
 $identity.ForeColor = $ivory
 $identity.BackColor = $case
-$identity.Location = New-Object System.Drawing.Point(($PAD + 26), 7)
+$identity.Location = New-Object System.Drawing.Point(($PAD + 28), 9)
 $identity.AutoSize = $true
 $form.Controls.Add($identity)
+
+# The route badge: two transcribers, one word, a click to swap them. A chip in
+# the title bar, because it says what the machine is, not what it is doing.
+$routeBadge = New-Object BogosUi.PillButton
+$routeBadge.Text = ''
+$routeBadge.Font = New-UiFont 7.5
+$routeBadge.ForeColor = $amber
+$routeBadge.HoverInk = $ivoryBright
+$routeBadge.Fill = $case
+$routeBadge.FillHover = $keyFace
+$routeBadge.Border = $hair
+$routeBadge.FocusBorder = $screenInk
+$routeBadge.Radius = 10
+$routeBadge.Location = New-Object System.Drawing.Point(($W - $PAD - 60 - 74), 9)
+$routeBadge.Size = New-Object System.Drawing.Size(70, 21)
+$routeBadge.AccessibleName = 'Cloud transcription route'
+$routeBadge.TabIndex = 5
+$form.Controls.Add($routeBadge)
+
+function New-WindowKey($glyph, $x) {
+    $key = New-Object BogosUi.PillButton
+    $key.Text = $glyph
+    $key.Font = New-GlyphFont 8
+    $key.ForeColor = $screenInk
+    $key.HoverInk = $ivory
+    $key.FillHover = $keyFace
+    $key.Radius = 6
+    $key.Location = New-Object System.Drawing.Point($x, 8)
+    $key.Size = New-Object System.Drawing.Size(26, 24)
+    $key.TabStop = $false
+    return $key
+}
+
+$minimise = New-WindowKey $(if ($glyphFace) { $glyphMinimise } else { $dash }) ($W - $PAD - 56)
+$minimise.AccessibleName = 'Minimise to the tray'
+$form.Controls.Add($minimise)
+
+$close = New-WindowKey $(if ($glyphFace) { $glyphClose } else { $cross }) ($W - $PAD - 26)
+$close.AccessibleName = 'Close the panel'
+$form.Controls.Add($close)
 
 # The seam between what this thing is and what it is doing.
 $seam = New-Object System.Windows.Forms.Panel
@@ -520,58 +848,17 @@ $seam.Size = New-Object System.Drawing.Size($W, 1)
 $seam.BackColor = $hair
 $form.Controls.Add($seam)
 
-# The route badge: two transcribers, one word, a click to swap them. It sits in
-# the title bar because it says what the machine is, not what it is doing.
-$routeBadge = New-Object System.Windows.Forms.Label
-$routeBadge.Text = ''
-$routeBadge.Font = New-UiFont 7.5
-$routeBadge.ForeColor = $amber
-$routeBadge.BackColor = $case
-$routeBadge.Location = New-Object System.Drawing.Point(($W - $PAD - 46 - 96), 4)
-$routeBadge.Size = New-Object System.Drawing.Size(92, 22)
-$routeBadge.TextAlign = 'MiddleRight'
-$routeBadge.Cursor = [System.Windows.Forms.Cursors]::Hand
-$routeBadge.AccessibleName = 'Cloud transcription route'
-$form.Controls.Add($routeBadge)
-
-$minimise = New-Object System.Windows.Forms.Label
-$minimise.Text = $dash
-$minimise.Font = New-UiFont 10
-$minimise.ForeColor = $screenInk
-$minimise.BackColor = $case
-$minimise.Location = New-Object System.Drawing.Point(($W - $PAD - 46), 4)
-$minimise.Size = New-Object System.Drawing.Size(22, 22)
-$minimise.TextAlign = 'MiddleCenter'
-$minimise.Cursor = [System.Windows.Forms.Cursors]::Hand
-$form.Controls.Add($minimise)
-
-$close = New-Object System.Windows.Forms.Label
-$close.Text = $cross
-$close.Font = New-UiFont 10
-$close.ForeColor = $screenInk
-$close.BackColor = $case
-$close.Location = New-Object System.Drawing.Point(($W - $PAD - 24), 4)
-$close.Size = New-Object System.Drawing.Size(22, 22)
-$close.TextAlign = 'MiddleCenter'
-$close.Cursor = [System.Windows.Forms.Cursors]::Hand
-$form.Controls.Add($close)
-
 # The readout is recessed, not raised. A well says "a window into the machine";
 # a raised card says "a panel from a dashboard", which is the thing to avoid.
-$wellPanel = New-Object System.Windows.Forms.Panel
+$wellPanel = New-Object BogosUi.Well
 $wellPanel.Location = New-Object System.Drawing.Point($PAD, $WELL_Y)
 $wellPanel.Size = New-Object System.Drawing.Size(($W - 2 * $PAD), $WELL_H)
 $wellPanel.BackColor = $well
-$wellPanel.Add_Paint({
-    param($sender, $e)
-    $pen = New-Object System.Drawing.Pen($hair, 1)
-    $e.Graphics.DrawRectangle($pen, 0, 0, $sender.Width - 1, $sender.Height - 1)
-    $pen.Dispose()
-})
+$wellPanel.Edge = $hair
+$wellPanel.Radius = 9
 $form.Controls.Add($wellPanel)
 
-$stateLamp = New-Lamp 10 16 9 $lampOff
-$stateLamp.BackColor = $well
+$stateLamp = New-Lamp 14 18 9 $lampOff
 $wellPanel.Controls.Add($stateLamp)
 
 $stateWord = New-Object System.Windows.Forms.Label
@@ -579,7 +866,7 @@ $stateWord.Text = 'STARTING'
 $stateWord.Font = New-DisplayFont 15
 $stateWord.ForeColor = $ivory
 $stateWord.BackColor = $well
-$stateWord.Location = New-Object System.Drawing.Point(32, 8)
+$stateWord.Location = New-Object System.Drawing.Point(34, 9)
 $stateWord.AutoSize = $true
 $wellPanel.Controls.Add($stateWord)
 
@@ -588,104 +875,123 @@ $subLine.Text = ''
 $subLine.Font = New-UiFont 8.5
 $subLine.ForeColor = $screenInk
 $subLine.BackColor = $well
-$subLine.Location = New-Object System.Drawing.Point(32, 34)
+$subLine.Location = New-Object System.Drawing.Point(35, 36)
 $subLine.AutoSize = $true
 $wellPanel.Controls.Add($subLine)
 
 $uptime = New-Object System.Windows.Forms.Label
 $uptime.Text = ''
-$uptime.Font = New-DisplayFont 11.5
+$uptime.Font = New-DisplayFont 11
 $uptime.ForeColor = $screenInk
 $uptime.BackColor = $well
-$uptime.Location = New-Object System.Drawing.Point(($wellPanel.Width - 122), 13)
-$uptime.Size = New-Object System.Drawing.Size(110, 18)
+$uptime.Location = New-Object System.Drawing.Point(($wellPanel.Width - 124), 14)
+$uptime.Size = New-Object System.Drawing.Size(110, 20)
 $uptime.TextAlign = 'MiddleRight'
 $wellPanel.Controls.Add($uptime)
 
-$keyBtn = New-Object System.Windows.Forms.Button
+# The key. Lit amber when it would start the bot, a quiet case key when it would
+# stop it: the one action that matters right now is the one that stands out.
+$keyBtn = New-Object BogosUi.PillButton
 $keyBtn.Text = 'START'
 $keyBtn.Font = New-DisplayFont 11
 $keyBtn.Size = New-Object System.Drawing.Size($KEY_W, $KEY_H)
 $keyBtn.Location = New-Object System.Drawing.Point($PAD, $KEY_Y)
-$keyBtn.FlatStyle = 'Flat'
-$keyBtn.FlatAppearance.BorderSize = 1
-$keyBtn.FlatAppearance.BorderColor = $hair
-$keyBtn.FlatAppearance.MouseOverBackColor = $keyFaceHover
-$keyBtn.FlatAppearance.MouseDownBackColor = $keyFaceDown
-$keyBtn.UseVisualStyleBackColor = $false
-$keyBtn.BackColor = $keyFace
-$keyBtn.ForeColor = $ivory
-$keyBtn.Cursor = [System.Windows.Forms.Cursors]::Hand
+$keyBtn.Radius = 9
+$keyBtn.FocusBorder = $ivoryDim
 $keyBtn.TabIndex = 0
 $form.Controls.Add($keyBtn)
 
-# A printed word beside a lamp, the way a recorder labels its own switch: the
-# word names the function, the lamp answers whether it is on. Colour is never
-# the only signal, because the line underneath says it in words too.
-$recLamp = New-Lamp ($KEY_W + $PAD + 22) ($KEY_Y + 12) 9 $recOff
-$recLamp.BackColor = $case
-$form.Controls.Add($recLamp)
+function Set-KeyFace($lit) {
+    if ($lit) {
+        $keyBtn.Fill = $amber
+        $keyBtn.FillHover = $amberHover
+        $keyBtn.FillDown = $amberDown
+        $keyBtn.Border = $amber
+        $keyBtn.ForeColor = $amberInk
+        $keyBtn.HoverInk = $amberInk
+    } else {
+        $keyBtn.Fill = $keyFace
+        $keyBtn.FillHover = $keyFaceHover
+        $keyBtn.FillDown = $keyFaceDown
+        $keyBtn.Border = $hair
+        $keyBtn.ForeColor = $ivory
+        $keyBtn.HoverInk = $ivoryBright
+    }
+    $keyBtn.Invalidate()
+}
 
-$recWord = New-Object System.Windows.Forms.Button
+# The latch: a lamp and the word REC on one rounded switch, the way a recorder
+# labels its own. The word names the function, the lamp answers whether it is
+# on, and the footer says it in words too, so colour is never the only signal.
+$recWord = New-Object BogosUi.PillButton
 $recWord.Text = 'REC'
-$recWord.Font = New-UiFont 8.5
-$recWord.Size = New-Object System.Drawing.Size(52, 24)
-$recWord.Location = New-Object System.Drawing.Point(($KEY_W + $PAD + 37), ($KEY_Y + 4))
-$recWord.FlatStyle = 'Flat'
-$recWord.FlatAppearance.BorderSize = 0
-$recWord.FlatAppearance.MouseOverBackColor = $case
-$recWord.FlatAppearance.MouseDownBackColor = $case
-$recWord.UseVisualStyleBackColor = $false
-$recWord.BackColor = $case
-$recWord.ForeColor = $screenInk
+$recWord.Font = New-DisplayFont 10
+$recWord.Size = New-Object System.Drawing.Size(($W - 2 * $PAD - $KEY_W - 10), $KEY_H)
+$recWord.Location = New-Object System.Drawing.Point(($PAD + $KEY_W + 10), $KEY_Y)
+$recWord.Radius = 9
+$recWord.Padding = New-Object System.Windows.Forms.Padding(14, 0, 8, 0)
 $recWord.TextAlign = 'MiddleLeft'
-$recWord.Cursor = [System.Windows.Forms.Cursors]::Hand
+$recWord.FocusBorder = $ivoryDim
+$recWord.HoverInk = $ivoryBright
 $recWord.TabIndex = 1
 $form.Controls.Add($recWord)
 
-$dest = New-Object System.Windows.Forms.Button
+# A second, fainter seam: above it the controls, below it the settings.
+$footSeam = New-Object System.Windows.Forms.Panel
+$footSeam.Location = New-Object System.Drawing.Point($PAD, $FOOT_Y)
+$footSeam.Size = New-Object System.Drawing.Size(($W - 2 * $PAD), 1)
+$footSeam.BackColor = $hair
+$form.Controls.Add($footSeam)
+
+# Footer rows: a small label, then the value. A value that does something when
+# clicked is a button that looks like text until the pointer is on it.
+function New-FootTag($text, $y) {
+    $tag = New-Object System.Windows.Forms.Label
+    $tag.Text = $text
+    $tag.Font = New-UiFont 7
+    $tag.ForeColor = $screenInk
+    $tag.BackColor = $case
+    $tag.Location = New-Object System.Drawing.Point($PAD, $y)
+    $tag.Size = New-Object System.Drawing.Size($TAG_W, $ROW_H)
+    $tag.TextAlign = 'MiddleLeft'
+    $form.Controls.Add($tag)
+    return $tag
+}
+
+function New-FootValue($y, $tabIndex) {
+    $row = New-Object BogosUi.PillButton
+    $row.Font = New-UiFont 8.5
+    $row.ForeColor = $ivoryDim
+    $row.HoverInk = $ivory
+    $row.FillHover = $keyFace
+    $row.FocusBorder = $hair
+    $row.Radius = 5
+    $row.Padding = New-Object System.Windows.Forms.Padding(6, 0, 6, 0)
+    $row.TextAlign = 'MiddleLeft'
+    $row.Location = New-Object System.Drawing.Point(($PAD + $TAG_W - 6), $y)
+    $row.Size = New-Object System.Drawing.Size(($W - 2 * $PAD - $TAG_W + 6), $ROW_H)
+    $row.TabIndex = $tabIndex
+    $form.Controls.Add($row)
+    return $row
+}
+
+$destTag = New-FootTag 'SAVE TO' $DEST_Y
+$dest = New-FootValue $DEST_Y 2
 $dest.Text = 'choose a folder'
-$dest.Font = New-UiFont 8
-$dest.Size = New-Object System.Drawing.Size(($W - 2 * $PAD + 6), 15)
-$dest.Location = New-Object System.Drawing.Point(($PAD - 3), $DEST_Y)
-$dest.FlatStyle = 'Flat'
-$dest.FlatAppearance.BorderSize = 0
-$dest.FlatAppearance.MouseOverBackColor = $case
-$dest.FlatAppearance.MouseDownBackColor = $case
-$dest.UseVisualStyleBackColor = $false
-$dest.BackColor = $case
-$dest.ForeColor = $ivoryDim
-$dest.TextAlign = 'MiddleLeft'
-$dest.AutoEllipsis = $true
-$dest.Cursor = [System.Windows.Forms.Cursors]::Hand
-$dest.TabIndex = 2
-$form.Controls.Add($dest)
 
-$apiRow = New-Object System.Windows.Forms.Button
+$apiTag = New-FootTag 'KEY' $API_Y
+$apiRow = New-FootValue $API_Y 3
 $apiRow.Text = 'add an OpenRouter key'
-$apiRow.Font = New-UiFont 8
-$apiRow.Size = New-Object System.Drawing.Size(($W - 2 * $PAD + 6), 15)
-$apiRow.Location = New-Object System.Drawing.Point(($PAD - 3), $API_Y)
-$apiRow.FlatStyle = 'Flat'
-$apiRow.FlatAppearance.BorderSize = 0
-$apiRow.FlatAppearance.MouseOverBackColor = $case
-$apiRow.FlatAppearance.MouseDownBackColor = $case
-$apiRow.UseVisualStyleBackColor = $false
-$apiRow.BackColor = $case
-$apiRow.ForeColor = $ivoryDim
-$apiRow.TextAlign = 'MiddleLeft'
-$apiRow.AutoEllipsis = $true
-$apiRow.Cursor = [System.Windows.Forms.Cursors]::Hand
-$apiRow.TabIndex = 3
-$form.Controls.Add($apiRow)
 
+$logTag = New-FootTag 'LOG' $LOG_Y
 $logLine = New-Object System.Windows.Forms.Label
 $logLine.Text = ''
-$logLine.Font = New-UiFont 7.5
+$logLine.Font = New-UiFont 8
 $logLine.ForeColor = $screenInk
 $logLine.BackColor = $case
-$logLine.Location = New-Object System.Drawing.Point($PAD, $LOG_Y)
-$logLine.Size = New-Object System.Drawing.Size(($W - 2 * $PAD), 15)
+$logLine.Location = New-Object System.Drawing.Point(($PAD + $TAG_W), $LOG_Y)
+$logLine.Size = New-Object System.Drawing.Size(($W - 2 * $PAD - $TAG_W), $ROW_H)
+$logLine.TextAlign = 'MiddleLeft'
 $logLine.AutoEllipsis = $true
 $form.Controls.Add($logLine)
 
@@ -698,20 +1004,19 @@ $tipProvider = New-Object System.Windows.Forms.ToolTip
 # is typed, and it should look like part of the thing it configures.
 
 function New-DialogButton($text, $x, $y, $w) {
-    $button = New-Object System.Windows.Forms.Button
+    $button = New-Object BogosUi.PillButton
     $button.Text = $text
     $button.Font = New-DisplayFont 10
-    $button.Size = New-Object System.Drawing.Size($w, 32)
+    $button.Size = New-Object System.Drawing.Size($w, 34)
     $button.Location = New-Object System.Drawing.Point($x, $y)
-    $button.FlatStyle = 'Flat'
-    $button.FlatAppearance.BorderSize = 1
-    $button.FlatAppearance.BorderColor = $hair
-    $button.FlatAppearance.MouseOverBackColor = $keyFaceHover
-    $button.FlatAppearance.MouseDownBackColor = $keyFaceDown
-    $button.UseVisualStyleBackColor = $false
-    $button.BackColor = $keyFace
+    $button.Radius = 8
+    $button.Fill = $keyFace
+    $button.FillHover = $keyFaceHover
+    $button.FillDown = $keyFaceDown
+    $button.Border = $hair
+    $button.FocusBorder = $ivoryDim
     $button.ForeColor = $ivory
-    $button.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $button.HoverInk = $ivoryBright
     return $button
 }
 
@@ -719,7 +1024,8 @@ function Show-KeyDialog {
     $dlgW = 440
     $dlgH = 250
 
-    $dlg = New-Object System.Windows.Forms.Form
+    $dlg = New-Object BogosUi.CaseForm
+    $dlg.EdgeColor = $hair
     $dlg.FormBorderStyle = 'None'
     $dlg.StartPosition = 'CenterParent'
     $dlg.Size = New-Object System.Drawing.Size($dlgW, $dlgH)
@@ -727,12 +1033,6 @@ function Show-KeyDialog {
     $dlg.ShowInTaskbar = $false
     $dlg.Icon = $form.Icon
     $dlg.KeyPreview = $true
-    $dlg.Add_Paint({
-        param($sender, $e)
-        $pen = New-Object System.Drawing.Pen($hair, 1)
-        $e.Graphics.DrawRectangle($pen, 0, 0, $sender.Width - 1, $sender.Height - 1)
-        $pen.Dispose()
-    })
 
     $head = New-Object System.Windows.Forms.Label
     $head.Text = 'OpenRouter key'
@@ -803,6 +1103,12 @@ function Show-KeyDialog {
     $dlg.Controls.Add($reveal)
 
     $save = New-DialogButton 'SAVE' 20 196 140
+    $save.Fill = $amber
+    $save.FillHover = $amberHover
+    $save.FillDown = $amberDown
+    $save.Border = $amber
+    $save.ForeColor = $amberInk
+    $save.HoverInk = $amberInk
     $save.TabIndex = 1
     $save.Add_Click({ Set-EnvValue 'OPENROUTER_API_KEY' $box.Text.Trim(); $dlg.Close() })
     $dlg.Controls.Add($save)
@@ -862,15 +1168,15 @@ function Update-Panel {
         $stateWord.ForeColor = $screenInk
         $subLine.Text = 'not running'
         $uptime.Text = ''
-        $keyBtn.Text = 'START'
+        if ($keyBtn.Text -ne 'START' -or $keyBtn.Fill -ne $amber) { $keyBtn.Text = 'START'; Set-KeyFace $true }
         $trayKey = 'stopped'
     } else {
-        Set-Lamp $stateLamp $(if ($bot.busy) { $amber } else { $lampOff })
+        Set-Lamp $stateLamp $(if ($bot.busy) { $amber } else { $lampOff }) $bot.busy
         $stateWord.Text = $bot.word
         $stateWord.ForeColor = $ivory
         $subLine.Text = $bot.sub
         $uptime.Text = 'up ' + (Format-Uptime $proc.CreationDate)
-        $keyBtn.Text = 'STOP'
+        if ($keyBtn.Text -ne 'STOP' -or $keyBtn.Fill -ne $keyFace) { $keyBtn.Text = 'STOP'; Set-KeyFace $false }
         $trayKey = if ($bot.busy) { 'busy' } else { 'idle' }
     }
 
@@ -878,14 +1184,25 @@ function Update-Panel {
 
     $recording = Get-Recording
     if ($recording.enabled) {
-        Set-Lamp $recLamp $recRed
+        $recWord.Dot = $recRed
+        $recWord.DotGlow = $true
+        $recWord.Fill = $recFill
+        $recWord.FillHover = $recFill
+        $recWord.Border = $recEdge
         $recWord.ForeColor = $recRed
-        $dest.Text = Shorten-Path $recording.folder 62
+        $recWord.Text = 'REC ON'
+        $dest.Text = Shorten-Path $recording.folder 48
     } else {
-        Set-Lamp $recLamp $recOff
+        $recWord.Dot = $recOff
+        $recWord.DotGlow = $false
+        $recWord.Fill = $case
+        $recWord.FillHover = $keyFace
+        $recWord.Border = $hair
         $recWord.ForeColor = $screenInk
+        $recWord.Text = 'REC OFF'
         if ($recording.folder) { $dest.Text = 'not saving to disk' } else { $dest.Text = 'choose a folder' }
     }
+    $recWord.Invalidate()
 
     if (Get-EnvValue 'OPENROUTER_API_KEY') {
         $apiRow.Text = 'OpenRouter key set'
@@ -912,7 +1229,6 @@ function Update-Panel {
     $tipProvider.SetToolTip($subLine, $tipState)
     $tipProvider.SetToolTip($uptime, 'Time since the bot process started.')
     $tipProvider.SetToolTip($recWord, $tipRecording + ' Applies at the next !transcript session.')
-    $tipProvider.SetToolTip($recLamp, $tipRecording + ' Applies at the next !transcript session.')
     $tipProvider.SetToolTip($dest, $tipRecording + ' Click to choose the folder.')
     $tipProvider.SetToolTip($keyBtn, 'Start or stop the bot process.')
     $tipProvider.SetToolTip($apiRow, 'The key cloud transcription uses. Saved in .env on this machine.')
@@ -935,10 +1251,6 @@ function Update-Panel {
     if ($tray) { $tray.Text = 'BOGOS bot: ' + $stateWord.Text }
 }
 
-$keyBtn.Add_MouseEnter({ $keyBtn.ForeColor = $ivoryBright })
-$keyBtn.Add_MouseLeave({ $keyBtn.ForeColor = $ivory })
-$keyBtn.Add_GotFocus({ $keyBtn.FlatAppearance.BorderColor = $screenInk })
-$keyBtn.Add_LostFocus({ $keyBtn.FlatAppearance.BorderColor = $hair })
 $keyBtn.Add_Click({
     $keyBtn.Enabled = $false
     if (Get-BotProcess) { Stop-Bot } else { Start-Bot }
@@ -947,8 +1259,6 @@ $keyBtn.Add_Click({
     Update-Panel
 })
 
-$recWord.Add_MouseEnter({ $recWord.ForeColor = $ivoryBright })
-$recWord.Add_MouseLeave({ Update-Panel })
 $recWord.Add_Click({
     $recording = Get-Recording
     if ($recording.enabled) {
@@ -964,8 +1274,6 @@ $recWord.Add_Click({
     Update-Panel
 })
 
-$dest.Add_MouseEnter({ $dest.ForeColor = $ivory })
-$dest.Add_MouseLeave({ $dest.ForeColor = $ivoryDim })
 $dest.Add_Click({
     $folder = Choose-Folder
     if (-not $folder) { return }
@@ -974,22 +1282,14 @@ $dest.Add_Click({
     Update-Panel
 })
 
-$apiRow.Add_MouseEnter({ $apiRow.ForeColor = $ivory })
-$apiRow.Add_MouseLeave({ $apiRow.ForeColor = $ivoryDim })
 $apiRow.Add_Click({ Show-KeyDialog })
-$routeBadge.Add_MouseEnter({ $routeBadge.ForeColor = $ivoryBright })
-$routeBadge.Add_MouseLeave({ Update-Panel })
 $routeBadge.Add_Click({
     $next = $(if ((Get-Route) -eq 'gemini') { 'voxtral' } else { 'gemini' })
     Set-EnvValue 'STT_CHUNK_PROVIDER' $next
     Update-Panel
 })
 
-$close.Add_MouseEnter({ $close.ForeColor = $ivory })
-$close.Add_MouseLeave({ $close.ForeColor = $screenInk })
 $close.Add_Click({ Save-Position; $form.Close() })
-$minimise.Add_MouseEnter({ $minimise.ForeColor = $ivory })
-$minimise.Add_MouseLeave({ $minimise.ForeColor = $screenInk })
 $minimise.Add_Click({ $form.Hide() })
 $form.Add_FormClosing({ Save-Position })
 
@@ -998,7 +1298,7 @@ $grab = New-Object System.Drawing.Point(0, 0)
 $startDrag = { param($sender, $e) $script:drag = $true; $script:grab = $e.Location }
 $doDrag = { param($sender, $e) if ($script:drag) { $form.Location = New-Object System.Drawing.Point(($form.Location.X - $script:grab.X + $e.X), ($form.Location.Y - $script:grab.Y + $e.Y)) } }
 $endDrag = { param($sender, $e) $script:drag = $false }
-foreach ($c in @($form, $mark, $identity, $seam, $wellPanel, $stateLamp, $stateWord, $subLine, $uptime)) {
+foreach ($c in @($form, $mark, $identity, $seam, $wellPanel, $stateLamp, $stateWord, $subLine, $uptime, $footSeam, $destTag, $apiTag, $logTag, $logLine)) {
     $c.Add_MouseDown($startDrag)
     $c.Add_MouseMove($doDrag)
     $c.Add_MouseUp($endDrag)
