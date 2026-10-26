@@ -544,7 +544,12 @@ class VoxtralTranscriber(ChunkTranscriber):
             # question with the sampler nudged: this route answers identically
             # every time at temperature 0.
             body["temperature"] = RETRY_TEMPERATURE
-        terms = glossary.terms()
+        # The terms travel as one comma-separated string, so a comma inside a
+        # term ("Warhammer 40,000", a sheet cell) would split it into two.
+        terms = [
+            " ".join(term.replace(",", " ").split()) for term in glossary.terms()
+        ]
+        terms = [term for term in terms if term]
         if terms:
             body["provider"] = {
                 "options": {

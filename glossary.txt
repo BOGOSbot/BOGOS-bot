@@ -38,6 +38,9 @@ Adeptus Custodes
 Adeptus Mechanicus
 Adeptus Titanicus
 Aeldari
+Black Templars
+Blood Angels
+Dark Angels
 Astra Militarum
 Chaos Daemons
 Chaos Knights
@@ -53,6 +56,7 @@ Leagues of Votann
 Necrons
 Orks
 Space Marines
+Space Wolves
 T'au Empire
 Thousand Sons
 Tyranids
