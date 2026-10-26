@@ -25,7 +25,7 @@ import discord.ext.voice_recv
 from discord.ext import commands
 
 import recording
-from bot import pairing
+from bot import pairing, triage
 from bot.audio_sink import STTAudioSink
 from bot.cleanup import clean_lines, render_diff
 from bot.recorder import ChannelRecorder
@@ -739,6 +739,9 @@ class STTBot:
         # Nothing heard after this belongs in the finished conversation, and the
         # next !transcript opens a folder of its own.
         recording.close_session()
+        # Read before the session list is cleared: the names said in this
+        # meeting are what keeps "Orks." or "Cyril ?" in the clean copy.
+        terms = glossary.terms()
         glossary.set_session_terms([])
 
         self._transcript_channel = None
@@ -772,8 +775,13 @@ class STTBot:
         stamp = (started or datetime.now(timezone.utc)).astimezone()
         text = [entry["line"] for entry in entries]
         path = self._save_session(entries, text, stamp)
+        kept, cut = triage.split(entries, terms)
+        sorted_paths = self._save_sorted(kept, cut, stamp) if path else None
         try:
-            await self._post_transcript(channel, path, text, entries)
+            if sorted_paths:
+                await self._post_sorted(channel, sorted_paths, path, text, kept, cut)
+            else:
+                await self._post_transcript(channel, path, text, entries)
         finally:
             # The session is over whether or not the post went through. Without
             # this the widget kept saying WRITING after every session that had
@@ -827,6 +835,71 @@ class STTBot:
         except (discord.HTTPException, OSError) as exc:
             logger.error("Could not post the transcript file: %s", exc)
             await self._post_lines(channel, lines)
+
+    def _save_sorted(
+        self, kept: list[dict], cut: list[dict], stamp: datetime
+    ) -> tuple[Path, Path] | None:
+        """Write the clean copy and what was taken out of it, side by side.
+
+        Same stem as the raw transcript, same line format, same timestamps, so
+        a line in either file is found in the other at the same minute.
+        """
+        try:
+            out_dir = Path(transcript_cfg.save_dir)
+            stem = f"transcription-{stamp:%Y-%m-%d-%H%M}"
+            clean = out_dir / f"{stem}-propre.md"
+            dropped = out_dir / f"{stem}-hallucinations-probables.md"
+            clean.write_text(
+                f"# Transcription \u2014 {stamp:%Y-%m-%d %H:%M} (propre)\n\n"
+                f"{len(kept)} tours gard\u00e9s. Les {len(cut)} retir\u00e9s "
+                f"(r\u00e9ponses courtes, bruits, phrases coup\u00e9es) sont dans "
+                f"{dropped.name}, \u00e0 la m\u00eame heure.\n\n---\n\n"
+                + "\n\n".join(entry["line"] for entry in kept)
+                + "\n",
+                encoding="utf-8",
+            )
+            dropped.write_text(
+                f"# Hallucinations probables \u2014 {stamp:%Y-%m-%d %H:%M}\n\n"
+                f"Les {len(cut)} tours retir\u00e9s de {clean.name}. Une ligne "
+                f"qui \u00e9tait vraie se remet \u00e0 sa place gr\u00e2ce \u00e0 "
+                f"son heure.\n\n---\n\n"
+                + "\n\n".join(entry["line"] for entry in cut)
+                + "\n",
+                encoding="utf-8",
+            )
+            logger.info("Sorted the session: %d kept, %d cut.", len(kept), len(cut))
+            return clean, dropped
+        except Exception as exc:
+            logger.error("Could not write the sorted transcript: %s", exc)
+            return None
+
+    async def _post_sorted(
+        self,
+        channel,
+        paths: tuple[Path, Path],
+        raw: Path,
+        lines: list[str],
+        kept: list[dict],
+        cut: list[dict],
+    ) -> None:
+        """Post the clean copy and the cut lines as one message, two files.
+
+        The raw transcript stays on disk beside them; it is exactly the two
+        files put back together, so posting it too would be a third copy.
+        """
+        clean, dropped = paths
+        try:
+            await channel.send(
+                f"**Transcription** \u00b7 {len(kept)} tours \u00b7 "
+                f"{len(cut)} hallucination(s) probable(s) mises \u00e0 part",
+                files=[
+                    discord.File(clean, filename=clean.name),
+                    discord.File(dropped, filename=dropped.name),
+                ],
+            )
+        except (discord.HTTPException, OSError) as exc:
+            logger.error("Could not post the sorted transcript: %s", exc)
+            await self._post_transcript(channel, raw, lines, kept + cut)
 
     async def _post_lines(self, channel, lines: list[str]) -> None:
         """Last resort: post the text, batched under the message cap."""
