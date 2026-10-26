@@ -184,6 +184,15 @@ class STTConfig:
     min_utterance_seconds: float = field(
         default_factory=lambda: _env_float("STT_MIN_UTTERANCE_SECONDS", 0.5)
     )
+    # 1b. Voice: the utterance must hold this much audio above this level,
+    #     measured in 20 ms frames on the raw signal. The average level above
+    #     cannot catch a click on room noise; this can. 0 turns it off.
+    voiced_dbfs: float = field(
+        default_factory=lambda: _env_float("STT_VOICED_DBFS", -45.0)
+    )
+    min_voiced_seconds: float = field(
+        default_factory=lambda: _env_float("STT_MIN_VOICED_SECONDS", 0.3)
+    )
     # 2. Level: lift quiet speakers toward a consistent target. Real speech in
     #    the dumps ranged from -52 to -15 dBFS, which is a lot of lost signal.
     normalize_dbfs: float = field(

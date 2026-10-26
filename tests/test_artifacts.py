@@ -58,3 +58,15 @@ def test_encyclopedia_fabrications_are_recognised():
 def test_real_speech_is_not_an_artifact():
     for text in ("J'ai remis mes points.", "Carré neuf.", "Allez !", "Merci."):
         assert not artifacts.is_artifact(text)
+
+
+@pytest.mark.parametrize("text", [".", "...", ",", " . ", "Thank you.", "THANK YOU!", "thanks"])
+def test_empty_and_english_thanks_readings_are_caught(text: str) -> None:
+    """26 Oct: 173 lines were a lone "." and 49 were "Thank you." from noise."""
+    assert artifacts.is_artifact(text)
+
+
+@pytest.mark.parametrize("text", ["Merci.", "Oui.", "OK.", "Thank you, Cyril.", "Ah."])
+def test_short_real_replies_survive(text: str) -> None:
+    """Only the whole reading is matched: a real short reply is kept."""
+    assert not artifacts.is_artifact(text)

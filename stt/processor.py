@@ -47,6 +47,22 @@ def _dbfs(samples: np.ndarray) -> float:
     return 20.0 * math.log10(rms / 32768.0)
 
 
+def _voiced_seconds(samples: np.ndarray, floor_dbfs: float, frame: int = 320) -> float:
+    """How much of an utterance is actually loud enough to be someone at a mic.
+
+    Counted in 20 ms frames at 16 kHz, on the raw signal before it is levelled.
+    The average level cannot tell a sentence from a click on a hiss: one frame
+    at -1 dBFS over ten seconds of room noise averages out like quiet speech.
+    """
+    usable = samples.size // frame * frame
+    if usable == 0:
+        return 0.0
+    frames = samples[:usable].astype(np.float64).reshape(-1, frame)
+    energy = (frames ** 2).mean(axis=1) / (32768.0 ** 2)
+    loud = energy > 10.0 ** (floor_dbfs / 10.0)
+    return float(loud.sum()) * frame / audio_cfg.output_sample_rate
+
+
 def _normalise(samples: np.ndarray, target_dbfs: float, max_gain_db: float) -> bytes:
     """Lift an utterance toward a consistent level so quiet speakers are not penalised.
 
@@ -73,6 +89,7 @@ class STTProcessor:
     # utterance. A class attribute so a processor built without __init__ - as
     # the tests build one - still has it.
     _warned_no_session = False
+    _dropped_unvoiced = 0
 
     def __init__(
         self,
@@ -287,6 +304,28 @@ class STTProcessor:
                     "Dropped %d near-silent utterance(s); last was %.1f dBFS.",
                     self._dropped_quiet,
                     level,
+                )
+            return
+
+        # Guard 1b: an utterance has to contain someone talking into a mic. On
+        # the 26 Oct meeting (13 people, 1,222 utterances) every line of real
+        # speech had at least 0.3 s above -45 dBFS; what fell under it was room
+        # noise and clicks the model wrote down as "Thank you.", "Merci." or a
+        # lone ".", and other people's voices leaking out of an open mic's
+        # speakers, transcribed again under the wrong name (37 of 38 of those
+        # overlapped someone else talking). It also stops that noise from
+        # closing everybody else's turn: 458 of 1,115 turns were cut by it.
+        voiced = _voiced_seconds(samples, stt_cfg.voiced_dbfs)
+        if voiced < stt_cfg.min_voiced_seconds:
+            self._dropped_unvoiced += 1
+            if self._dropped_unvoiced % 10 == 1:
+                logger.info(
+                    "Dropped %d utterance(s) with no one at the mic; last had "
+                    "%.2fs above %.0f dBFS in %.1fs.",
+                    self._dropped_unvoiced,
+                    voiced,
+                    stt_cfg.voiced_dbfs,
+                    seconds,
                 )
             return
 

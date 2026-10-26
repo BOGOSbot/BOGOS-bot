@@ -16,6 +16,7 @@ not from imagination.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 # Matched against the folded text as substrings, because a hallucination often
@@ -51,6 +52,18 @@ PHRASES: tuple[str, ...] = (
 )
 
 
+# Whole readings that are never what this table said. Matched against the entire
+# reading, with its punctuation taken off, never as a substring. Measured on the
+# 26 Oct meeting: "Thank you." came back 49 times, from 0.5 to 15 seconds of
+# room noise, in a French conversation. "Merci", "Oui" and "OK" stay out: they
+# are said for real at this table.
+WHOLE: frozenset[str] = frozenset({
+    "thank you",
+    "thank you very much",
+    "thanks",
+})
+
+
 def fold(text: str) -> str:
     """Lowercase, accent-stripped, whitespace-collapsed."""
     decomposed = unicodedata.normalize("NFKD", text or "")
@@ -59,8 +72,17 @@ def fold(text: str) -> str:
 
 
 def is_artifact(text: str) -> bool:
-    """True when the text is, or carries, a memorised subtitle credit."""
+    """True when the text is a memorised phrase, or no words at all.
+
+    A reading of nothing but punctuation - ".", "...", "," - is the model saying
+    it heard no speech; 173 lines of the 26 Oct transcript were exactly that.
+    """
     folded = fold(text)
     if not folded:
         return False
+    bare = " ".join(re.sub(r"[^\w']+", " ", folded).split())
+    if not bare:
+        return True
+    if bare in WHOLE:
+        return True
     return any(phrase in folded for phrase in PHRASES)
