@@ -121,6 +121,7 @@ Stratagem
 Stratagems
 Command point
 Command points
+reroll
 Battle-shock
 stat check
 Deep Strike
