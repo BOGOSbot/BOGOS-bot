@@ -1,14 +1,15 @@
 # The 40k term corpus
 
-*Why the bot ships 128 names, how the other 11,000 are rebuilt, and what the rules app does with them.*
+*Why the bot ships a short hand-picked list, how the other 11,000 are rebuilt, and what the rules app does with them.*
 
 ## Two lists, two jobs
 
 `glossary.txt` is attached to every transcription request, so it is paid on every
-chunk: 128 terms, a few hundred tokens a call (452 measured at 114). That is the head, and it holds only what is
-the same for everybody — the factions under their printed and their spoken names,
-the rule terms, the wargear people name out loud, and the loanwords a tournament
-week runs on. Its size is the decision; see the README for how to tune it.
+chunk: a few hundred tokens a call (452 when it was measured). That is the head,
+and it holds only what is the same for everybody — the factions under their
+printed and their spoken names, the rule terms, the wargear people name out
+loud, and the loanwords a tournament week runs on. Its size is the decision; see
+the README for how to tune it.
 
 Behind it sits the corpus: every name the books carry. **11,303 terms, about
 41,900 tokens** on the 2026-10-19 export. That is 95% of a one-minute chunk, so

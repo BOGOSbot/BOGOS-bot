@@ -1,6 +1,6 @@
 """Rebuild the Warhammer 40,000 term corpus from a rules-repository CSV export.
 
-`glossary.txt` is 128 hand-picked terms and stays that way: it is attached to
+`glossary.txt` is a short hand-picked list and stays that way: it is attached to
 every transcription request, so it holds only what is the same for everybody.
 This builds the larger corpus behind it - every name the books carry, split into
 what a player says at the table and what is only ever read on paper - from the
@@ -26,7 +26,7 @@ The input contract is the export's own layout, pipe-delimited:
 Measured on the 2026-10-19 export: 11,303 terms over 24 factions - 8,194 of
 them named at the table, 3,059 read off the paper, and 50 game-wide - about
 41,900 tokens. That is 95% of a one-minute chunk, which is why the bot ships the
-128-term head instead - see docs/glossary-corpus.md.
+hand-picked head instead - see docs/glossary-corpus.md.
 """
 
 from __future__ import annotations
