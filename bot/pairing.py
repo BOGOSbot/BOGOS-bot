@@ -237,12 +237,19 @@ def parse(csv_text: str) -> Report:
         raise ValueError("no Joueur header row")
 
     header = [(cell or "").strip() for cell in rows[header_index]]
-    # Faction columns start at 2 and run until the first blank header, so the
-    # count follows the event (6 or 8) instead of being hardcoded.
-    end = 2
-    while end < len(header) and header[end]:
-        end += 1
-    faction_columns = list(range(2, end))
+    # The opponent columns start at 2 and stop at the Tables ? column, which is
+    # where the sheet stops listing armies and starts listing results. Falling
+    # back to the first blank header keeps a header that drops Tables ? readable,
+    # and the count follows the event (6 or 8) instead of being hardcoded.
+    tables_column = next(
+        (i for i, h in enumerate(header) if i >= 2 and h.lower().startswith("tables")),
+        None,
+    )
+    if tables_column is None:
+        tables_column = 2
+        while tables_column < len(header) and header[tables_column]:
+            tables_column += 1
+    faction_columns = list(range(2, tables_column))
     # The cell beside Joueur names the player's own army. Stats has a Joueur
     # header too, but its next cell is a score, so this is what tells a team tab
     # apart from it.

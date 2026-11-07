@@ -16,12 +16,12 @@ SHEET_ID = "0ExampleSheetIdForTests_1234567890abcdef"
 
 
 def _header(factions: int = 6) -> list[str]:
-    """The pairing header, including the trailing Liste column."""
+    """The header as the live sheet writes it: Tables ? then the results."""
     names = ["GI", "TS", "DG", "LoV", "Necron", "SM", "Tau", "CK"][:factions]
-    head = ["Joueur", "Faction", *names, "", "", "Tables ?"]
-    head += [""] * (19 - len(head))
-    head.append("Liste")
-    return head
+    return [
+        "Joueur", "Faction", *names, "Tables ?",
+        "Résultat /100", "Estimé basse", "Estimée haute",
+    ]
 
 
 def _row(head: list[str], name: str = "", matchups: int = 0,
@@ -85,6 +85,20 @@ def test_an_eight_faction_event_changes_the_target() -> None:
     assert report.players[0].matchups_done
 
 
+def test_the_opponent_columns_end_at_the_tables_column() -> None:
+    # Tables ? sits straight after the last faction, and everything past it is
+    # a result. Those cells are not matchups and must not be counted.
+    head = ["Joueur", "Faction", "Custo", "IK", "TS", "Tables ?",
+            "Résultat /100", "Estimé basse", "Estimée haute"]
+    report = pairing.parse(_sheet(
+        head,
+        _row(head, "Alex", 3, "Avec"),
+        _row(head, "", 0, "Sans"),
+    ))
+    assert report.matchups_total == 3
+    assert report.players[0].matchups_done
+
+
 def test_a_stats_tab_is_rejected_by_its_header() -> None:
     # Stats has a Joueur header but a score where a team tab has Faction.
     stats = "Joueur,Match,Victoire\nPierre,5,3\n"
@@ -92,19 +106,9 @@ def test_a_stats_tab_is_rejected_by_its_header() -> None:
         pairing.parse(stats)
 
 
-def test_a_team_tab_is_read_without_a_liste_column() -> None:
-    # The lists live in another document now, so a workbook may drop the column.
-    head = [cell for cell in _header() if cell != "Liste"]
-    report = pairing.parse(_sheet(
-        head,
-        _row(head, "Alex", 6, "Avec"),
-        _row(head, "", 0, "Sans"),
-    ))
-    assert report.players[0].matchups_done
-
-
 def test_the_list_column_is_neither_read_nor_reported() -> None:
-    head = _header()
+    # The live sheet has no Liste column; one that still has it is ignored.
+    head = [*_header(), "Liste"]
     report = pairing.parse(_sheet(
         head,
         _row(head, "Alex", 0, "Avec", liste="OK"),
