@@ -26,12 +26,14 @@ def _header(factions: int = 6) -> list[str]:
 
 def _row(head: list[str], name: str = "", matchups: int = 0,
          tables: str = "", liste: str = "") -> str:
+    """A player row. Liste stays writable so a test can prove it is ignored."""
     cells = [""] * len(head)
     cells[0] = name
     for index in range(2, 2 + matchups):
         cells[index] = "x"
     cells[head.index("Tables ?")] = tables
-    cells[head.index("Liste")] = liste
+    if "Liste" in head:
+        cells[head.index("Liste")] = liste
     return ",".join(cells)
 
 
@@ -44,51 +46,76 @@ def test_only_the_avec_row_filled_is_complete() -> None:
     head = _header()
     report = pairing.parse(_sheet(
         head,
-        _row(head, "Alex", 6, "Avec", "OK"),
+        _row(head, "Alex", 6, "Avec"),
         _row(head, "", 0, "Sans"),
     ))
     assert report.players[0].avec == 6
     assert report.players[0].sans == 0
-    assert report.players[0].done
+    assert report.players[0].matchups_done
 
 
 def test_only_the_sans_row_filled_is_complete() -> None:
     head = _header()
     report = pairing.parse(_sheet(
         head,
-        _row(head, "Zoé", 0, "Avec", "OK"),
+        _row(head, "Zoé", 0, "Avec"),
         _row(head, "", 6, "Sans"),
     ))
-    assert report.players[0].done
+    assert report.players[0].matchups_done
 
 
 def test_a_partly_filled_row_is_not_complete() -> None:
     head = _header()
     player = pairing.parse(_sheet(
         head,
-        _row(head, "Zed", 6, "Avec", ""),
+        _row(head, "Zed", 3, "Avec"),
         _row(head, "", 1, "Sans"),
     )).players[0]
-    assert player.done is False
-    assert player.liste_label == "Pas de liste"
+    assert player.matchups_done is False
 
 
 def test_an_eight_faction_event_changes_the_target() -> None:
     head = _header(8)
     report = pairing.parse(_sheet(
         head,
-        _row(head, "Dana", 8, "Avec", "OK"),
+        _row(head, "Dana", 8, "Avec"),
         _row(head, "", 0, "Sans"),
     ))
     assert report.matchups_total == 8
-    assert report.players[0].done
+    assert report.players[0].matchups_done
 
 
-def test_a_tab_without_a_liste_column_is_rejected() -> None:
-    # Stats looks like a pairing tab until the missing Liste column is noticed.
+def test_a_stats_tab_is_rejected_by_its_header() -> None:
+    # Stats has a Joueur header but a score where a team tab has Faction.
     stats = "Joueur,Match,Victoire\nPierre,5,3\n"
     with pytest.raises(ValueError):
         pairing.parse(stats)
+
+
+def test_a_team_tab_is_read_without_a_liste_column() -> None:
+    # The lists live in another document now, so a workbook may drop the column.
+    head = [cell for cell in _header() if cell != "Liste"]
+    report = pairing.parse(_sheet(
+        head,
+        _row(head, "Alex", 6, "Avec"),
+        _row(head, "", 0, "Sans"),
+    ))
+    assert report.players[0].matchups_done
+
+
+def test_the_list_column_is_neither_read_nor_reported() -> None:
+    head = _header()
+    report = pairing.parse(_sheet(
+        head,
+        _row(head, "Alex", 0, "Avec", liste="OK"),
+        _row(head, "", 0, "Sans"),
+        _row(head, "Fab", 6, "Avec", liste="pas encore"),
+        _row(head, "", 0, "Sans"),
+    ))
+    text = pairing.render([pairing.TabReport("Yokai", report)], pairing.Resolver())
+    assert "**Alex**" in text
+    assert "pas encore" not in text
+    assert "liste" not in text.lower()
 
 
 def test_an_annexe_style_tab_has_no_joueur_header() -> None:
@@ -108,9 +135,9 @@ def test_the_summary_sections_by_team_and_pings_only_resolved_players() -> None:
     head = _header()
     yokai = pairing.parse(_sheet(
         head,
-        _row(head, "Nils", 0, "Avec", "OK"),
+        _row(head, "Nils", 0, "Avec"),
         _row(head, "", 0, "Sans"),
-        _row(head, "Fab", 6, "Avec", ""),
+        _row(head, "Fab", 3, "Avec"),
         _row(head, "", 0, "Sans"),
     ))
     roster = pairing.Resolver(
@@ -128,7 +155,7 @@ def test_the_summary_says_so_when_every_team_is_complete() -> None:
     head = _header()
     ok = pairing.parse(_sheet(
         head,
-        _row(head, "Fab", 6, "Avec", "OK"),
+        _row(head, "Fab", 6, "Avec"),
         _row(head, "", 0, "Sans"),
     ))
     text = pairing.render([pairing.TabReport("Immat", ok)], pairing.Resolver())
@@ -197,7 +224,7 @@ def test_a_name_the_roster_cannot_settle_is_left_unpinged() -> None:
     head = _header()
     report = pairing.parse(_sheet(
         head,
-        _row(head, "Milo", 0, "Avec", "OK"),
+        _row(head, "Milo", 0, "Avec"),
         _row(head, "", 0, "Sans"),
     ))
     text = pairing.render([pairing.TabReport("Yokai", report)], roster)
@@ -233,11 +260,11 @@ def test_the_workbook_names_are_the_teams_players_and_armies():
         players=[
             pairing.Player(
                 name="Zed (Sam)", faction="Drukhari", avec=6, sans=0,
-                matchups_total=6, liste="OK",
+                matchups_total=6,
             ),
             pairing.Player(
                 name="Fab", faction="Necrons", avec=0, sans=0,
-                matchups_total=6, liste="",
+                matchups_total=6,
             ),
         ],
         matchups_total=6,
@@ -253,10 +280,10 @@ def test_a_cell_too_short_to_be_a_name_is_dropped():
     report = pairing.Report(
         players=[
             pairing.Player(
-                name="OK", faction="-", avec=0, sans=0, matchups_total=6, liste="",
+                name="OK", faction="-", avec=0, sans=0, matchups_total=6,
             ),
             pairing.Player(
-                name="Mandal", faction="", avec=0, sans=0, matchups_total=6, liste="",
+                name="Mandal", faction="", avec=0, sans=0, matchups_total=6,
             ),
         ],
         matchups_total=6,

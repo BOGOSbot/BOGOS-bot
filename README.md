@@ -1,6 +1,6 @@
 # BOGOS-bot
 
-A Discord bot for a Warhammer 40K group. Two jobs so far: it transcribes voice channels, and it reports who has filled their pairing sheet.
+A Discord bot for a Warhammer 40K group. Two jobs so far: it transcribes voice channels, and it reports the matchup estimates still missing from their pairing sheet.
 
 Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0131/Discord-Realtime-STT-Bot).
 
@@ -10,7 +10,7 @@ Fork of [Leehyunbin0131/Discord-Realtime-STT-Bot](https://github.com/Leehyunbin0
 |---|---|
 | `!transcript [pairing sheet link]` | Joins your voice channel and starts listening. With a link, it reads the teams, players and armies out of the sheet first and teaches them to the transcriber |
 | `!stop` | Finishes the queued speech and posts the session as a clean copy plus the turns it set aside |
-| `!pairing <sheets link>` | Reports who still owes matchups or a list, per team tab, and teaches the transcriber the same names |
+| `!pairing <sheets link>` | Reports whose matchup estimates are still incomplete, per team tab, and teaches the transcriber the same names |
 
 ## How transcription works
 

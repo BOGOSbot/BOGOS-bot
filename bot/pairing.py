@@ -9,18 +9,19 @@ tab. That keeps the feature working before the bot is hosted, with nothing
 to expire and no service account to leak.
 
 Which tabs count is decided by the tabs themselves rather than by a list: a
-pairing tab has a Joueur header row, a Liste column and at least one player.
-That selects the team tabs and skips the others - Stats has no Liste column,
-Annexe has no Joueur row, Reference is an empty template, Fiches is blank -
-and a new team tab is picked up with no configuration.
+pairing tab has a Joueur header row, a Faction column and at least one opponent
+column. That selects the team tabs and skips the others - Stats has no Faction
+header, Annexe has no Joueur row, Reference is an empty template, Fiches is
+blank - and a new team tab is picked up with no configuration.
 
 Layout it depends on, read from the header row rather than hardcoded:
   Joueur | Faction | <opponent factions...> | Tables ? | ... | Liste
 
-A player fills the matchup columns in EITHER the Avec row or the Sans row -
-they pick tables or they do not - and must fill all of them. So the test is
-max(avec, sans) == number of faction columns, which keeps working when an
-event has 8 factions instead of 6.
+Only the matchup columns are reported. A player fills them in EITHER the Avec
+row or the Sans row - they pick tables or they do not - and must fill all of
+them. So the test is max(avec, sans) == number of faction columns, which keeps
+working when an event has 8 factions instead of 6. The Liste column belongs to
+another process: nothing is read from it, so a workbook may keep it or drop it.
 
 Names become pings in three layers, first hit wins:
   1. an id written in the sheet itself, if the sheet carries one;
@@ -157,24 +158,10 @@ class Player:
     avec: int
     sans: int
     matchups_total: int
-    liste: str
 
     @property
     def matchups_done(self) -> bool:
         return max(self.avec, self.sans) >= self.matchups_total
-
-    @property
-    def liste_ok(self) -> bool:
-        return self.liste.strip().upper() == "OK"
-
-    @property
-    def liste_label(self) -> str:
-        """What to show when the list is missing: the cell, or a plain note."""
-        return self.liste.strip() or "Pas de liste"
-
-    @property
-    def done(self) -> bool:
-        return self.matchups_done and self.liste_ok
 
 
 @dataclass
@@ -185,10 +172,6 @@ class Report:
     @property
     def matchups_missing(self) -> list[Player]:
         return [p for p in self.players if not p.matchups_done]
-
-    @property
-    def liste_missing(self) -> list[Player]:
-        return [p for p in self.players if not p.liste_ok]
 
 
 @dataclass
@@ -241,8 +224,9 @@ def _filled(row: Sequence[str], columns: Sequence[int]) -> int:
 def parse(csv_text: str) -> Report:
     """Parse a pairing tab, or raise if this tab is not one.
 
-    Raising is how non-pairing tabs are filtered: Stats has a Joueur header
-    but no Liste column, Annexe has no Joueur header at all.
+    Raising is how non-pairing tabs are filtered: Stats has a Joueur header but
+    a score where the Faction column should be, Annexe has no Joueur header at
+    all.
     """
     rows = list(csv.reader(io.StringIO(csv_text)))
     header_index = next(
@@ -259,12 +243,12 @@ def parse(csv_text: str) -> Report:
     while end < len(header) and header[end]:
         end += 1
     faction_columns = list(range(2, end))
-    liste_column = next(
-        (i for i, h in enumerate(header) if h.lower().startswith("liste")),
-        None,
-    )
-    if liste_column is None or not faction_columns:
-        raise ValueError("not a pairing tab: no Liste column or no factions")
+    # The cell beside Joueur names the player's own army. Stats has a Joueur
+    # header too, but its next cell is a score, so this is what tells a team tab
+    # apart from it.
+    faction_header = header[1].lower() if len(header) > 1 else ""
+    if not faction_header.startswith("faction") or not faction_columns:
+        raise ValueError("not a pairing tab: no Faction header or no opponents")
 
     table_index = next(
         (
@@ -291,7 +275,6 @@ def parse(csv_text: str) -> Report:
                 avec=_filled(row, faction_columns),
                 sans=_filled(sans_row, faction_columns) if sans_row else 0,
                 matchups_total=len(faction_columns),
-                liste=(row[liste_column] if len(row) > liste_column else ""),
             )
         )
     return report
@@ -377,18 +360,15 @@ def render(
     for entry in tabs:
         lines.append("")
         lines.append(f"**{entry.tab}**")
-        missing_matchups = entry.report.matchups_missing
-        missing_liste = entry.report.liste_missing
-        if not missing_matchups and not missing_liste:
+        missing = entry.report.matchups_missing
+        if not missing:
             lines.append("Tout est bon.")
             continue
-        for player in missing_matchups:
+        for player in missing:
             filled = max(player.avec, player.sans)
             lines.append(
                 f"- {_who(player, resolver)} : Estim\u00e9s {filled}/{entry.report.matchups_total}"
             )
-        for player in missing_liste:
-            lines.append(f"- {_who(player, resolver)} : {player.liste_label}")
 
     text = "\n".join(lines)
     if len(text) > limit:
